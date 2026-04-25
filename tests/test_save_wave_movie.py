@@ -2,9 +2,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import numpy as np
+
 from save_wave_movie import (
+    apply_plain_axis_format,
     build_default_gif_path,
     build_default_png_path,
+    build_frame_title,
+    cells_to_triangles,
+    project_points_for_view,
     resolve_snapshot_files,
     select_snapshot_files,
     snapshot_sort_key,
@@ -94,6 +101,53 @@ class SaveWaveMovieTests(unittest.TestCase):
             gif_path,
             output_dir / "S1.ABAZ_Total_AVS_movie_000001_to_AVS_movie_000100_8fps.gif",
         )
+
+    def test_build_frame_title(self) -> None:
+        title = build_frame_title("S1.ABAZ", "Total", Path("AVS_movie_000050.inp"))
+
+        self.assertEqual(title, "S1.ABAZ | Total | AVS_movie_000050")
+
+    def test_cells_to_triangles_splits_quads(self) -> None:
+        cells = np.array([4, 0, 1, 2, 3, 4, 3, 2, 4, 5], dtype=np.int64)
+
+        triangles = cells_to_triangles(cells)
+
+        expected = np.array(
+            [
+                [0, 1, 2],
+                [0, 2, 3],
+                [3, 2, 4],
+                [3, 4, 5],
+            ],
+            dtype=np.int64,
+        )
+        self.assertTrue(np.array_equal(triangles, expected))
+
+    def test_project_points_for_view_converts_to_km(self) -> None:
+        points = np.array(
+            [
+                [1000.0, 2000.0, 3000.0],
+                [4000.0, 5000.0, 6000.0],
+            ]
+        )
+
+        x_values, y_values, x_label, y_label = project_points_for_view(points, "yz")
+
+        self.assertTrue(np.allclose(x_values, np.array([2.0, 5.0])))
+        self.assertTrue(np.allclose(y_values, np.array([3.0, 6.0])))
+        self.assertEqual(x_label, "y (km)")
+        self.assertEqual(y_label, "z (km)")
+
+    def test_apply_plain_axis_format_uses_plain_ticks(self) -> None:
+        fig, ax = plt.subplots()
+        self.addCleanup(plt.close, fig)
+
+        apply_plain_axis_format(ax, "x (km)", "y (km)")
+
+        self.assertEqual(ax.get_xlabel(), "x (km)")
+        self.assertEqual(ax.get_ylabel(), "y (km)")
+        self.assertFalse(ax.xaxis.get_major_formatter().get_useOffset())
+        self.assertFalse(ax.yaxis.get_major_formatter().get_useOffset())
 
 
 if __name__ == "__main__":

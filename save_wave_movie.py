@@ -5,6 +5,7 @@ import argparse
 import importlib.util
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,9 +24,35 @@ os.environ.setdefault("MPLCONFIGDIR", str(TMP_MPL_DIR))
 os.environ.setdefault("MESA_SHADER_CACHE_DIR", str(TMP_SHADER_CACHE_DIR))
 os.environ.setdefault("XDG_CACHE_HOME", str(TMP_CACHE_DIR))
 
+import matplotlib
+
+matplotlib.use("Agg")
+
+from matplotlib import pyplot as plt
+from matplotlib.ticker import MaxNLocator, ScalarFormatter
+from matplotlib.tri import Triangulation
+
 COMPONENTS = ("Total", "X", "Y", "Z")
 DEFAULT_DATASET_ROOT = Path("/data/Bohai_Sea/To_ZGT_wave_movie")
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "visualizations"
+VIEW_AXES = {
+    "auto": ("x", "y"),
+    "xy": ("x", "y"),
+    "xz": ("x", "z"),
+    "yz": ("y", "z"),
+    "isometric": ("x", "y"),
+}
+
+
+@dataclass(frozen=True)
+class RenderContext:
+    triangulation: Triangulation
+    x_limits: tuple[float, float]
+    y_limits: tuple[float, float]
+    x_label: str
+    y_label: str
+    scalar_name: str
+    reference_points: np.ndarray
 
 
 def load_pyvista() -> "pv":
@@ -226,7 +253,180 @@ def can_write_gif() -> bool:
     return importlib.util.find_spec("imageio") is not None
 
 
+def build_frame_title(case_name: str, component: str, frame_file: Path) -> str:
+    return f"{case_name} | {component} | {frame_file.stem}"
+
+
+def cells_to_triangles(cells: np.ndarray) -> np.ndarray:
+    triangles: list[list[int]] = []
+    cell_array = np.asarray(cells, dtype=np.int64).ravel()
+    index = 0
+
+    while index < cell_array.size:
+        vertex_count = int(cell_array[index])
+        vertex_ids = cell_array[index + 1 : index + 1 + vertex_count]
+        if vertex_count < 3:
+            raise ValueError(f"不支持少于 3 个节点的单元: {vertex_count}")
+
+        for offset in range(1, vertex_count - 1):
+            triangles.append(
+                [
+                    int(vertex_ids[0]),
+                    int(vertex_ids[offset]),
+                    int(vertex_ids[offset + 1]),
+                ]
+            )
+        index += vertex_count + 1
+
+    return np.asarray(triangles, dtype=np.int64)
+
+
+def project_points_for_view(
+    points: np.ndarray,
+    view: str,
+) -> tuple[np.ndarray, np.ndarray, str, str]:
+    axis_names = VIEW_AXES[view]
+    axis_to_index = {"x": 0, "y": 1, "z": 2}
+    x_axis_name, y_axis_name = axis_names
+    x_values = np.asarray(points[:, axis_to_index[x_axis_name]], dtype=np.float64) / 1000.0
+    y_values = np.asarray(points[:, axis_to_index[y_axis_name]], dtype=np.float64) / 1000.0
+    return (
+        x_values,
+        y_values,
+        f"{x_axis_name} (km)",
+        f"{y_axis_name} (km)",
+    )
+
+
+def expand_axis_limits(values: np.ndarray) -> tuple[float, float]:
+    lower = float(values.min())
+    upper = float(values.max())
+    if lower == upper:
+        padding = abs(lower) * 0.01 or 1.0
+        return lower - padding, upper + padding
+
+    padding = (upper - lower) * 0.02
+    return lower - padding, upper + padding
+
+
+def apply_plain_axis_format(ax: plt.Axes, x_label: str, y_label: str) -> None:
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_aspect("equal", adjustable="box")
+
+    x_formatter = ScalarFormatter(useOffset=False)
+    x_formatter.set_scientific(False)
+    y_formatter = ScalarFormatter(useOffset=False)
+    y_formatter.set_scientific(False)
+    ax.xaxis.set_major_formatter(x_formatter)
+    ax.yaxis.set_major_formatter(y_formatter)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.tick_params(axis="both", labelsize=11)
+
+
+def load_render_context(frame_file: Path, view: str) -> tuple[RenderContext, np.ndarray]:
+    pv = load_pyvista()
+    mesh = pv.read(str(frame_file))
+    scalar_name = pick_scalar_name(mesh)
+    scalar_values = np.asarray(mesh.point_data[scalar_name], dtype=np.float64)
+    triangles = cells_to_triangles(mesh.cells)
+    x_values, y_values, x_label, y_label = project_points_for_view(mesh.points, view)
+
+    context = RenderContext(
+        triangulation=Triangulation(x_values, y_values, triangles),
+        x_limits=expand_axis_limits(x_values),
+        y_limits=expand_axis_limits(y_values),
+        x_label=x_label,
+        y_label=y_label,
+        scalar_name=scalar_name.strip() or scalar_name,
+        reference_points=np.asarray(mesh.points, dtype=np.float64),
+    )
+    return context, scalar_values
+
+
+def validate_fixed_geometry(frame_file: Path, reference_points: np.ndarray) -> np.ndarray:
+    pv = load_pyvista()
+    mesh = pv.read(str(frame_file))
+    current_points = np.asarray(mesh.points, dtype=np.float64)
+    if current_points.shape != reference_points.shape:
+        raise ValueError(
+            f"{frame_file.name} 的点数与首帧不同: "
+            f"{current_points.shape[0]} != {reference_points.shape[0]}"
+        )
+    if not np.allclose(current_points, reference_points):
+        raise ValueError(
+            f"{frame_file.name} 的几何与首帧不同。"
+            "这版脚本按固定几何、更新点标量的方式保存。"
+        )
+
+    scalar_name = pick_scalar_name(mesh)
+    return np.asarray(mesh.point_data[scalar_name], dtype=np.float64)
+
+
+def create_render_figure(
+    context: RenderContext,
+    scalar_values: np.ndarray,
+    case_name: str,
+    component: str,
+    frame_file: Path,
+    window_size: tuple[int, int],
+    cmap: str,
+    clim: tuple[float, float],
+    show_edges: bool,
+) -> tuple[plt.Figure, plt.Axes, object, plt.Text]:
+    width, height = window_size
+    dpi = 100
+    fig = plt.figure(figsize=(width / dpi, height / dpi), dpi=dpi, facecolor="white")
+    grid = fig.add_gridspec(
+        nrows=1,
+        ncols=2,
+        width_ratios=(24, 1.2),
+        left=0.08,
+        right=0.92,
+        bottom=0.11,
+        top=0.90,
+        wspace=0.08,
+    )
+    ax = fig.add_subplot(grid[0, 0])
+    cax = fig.add_subplot(grid[0, 1])
+
+    mesh_artist = ax.tripcolor(
+        context.triangulation,
+        scalar_values,
+        shading="gouraud",
+        cmap=cmap,
+        vmin=clim[0],
+        vmax=clim[1],
+    )
+    if show_edges:
+        ax.triplot(context.triangulation, color="black", linewidth=0.15, alpha=0.18)
+
+    ax.set_xlim(*context.x_limits)
+    ax.set_ylim(*context.y_limits)
+    apply_plain_axis_format(ax, context.x_label, context.y_label)
+    title = ax.set_title(
+        build_frame_title(case_name, component, frame_file),
+        fontsize=16,
+        pad=12,
+    )
+
+    colorbar = fig.colorbar(mesh_artist, cax=cax, orientation="vertical")
+    colorbar.set_label(component, fontsize=12)
+    colorbar.ax.tick_params(labelsize=10)
+
+    return fig, ax, mesh_artist, title
+
+
+def figure_to_rgb_array(fig: plt.Figure) -> np.ndarray:
+    fig.canvas.draw()
+    rgba = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)
+    return rgba[:, :, :3].copy()
+
+
 def render_png(
+    case_name: str,
+    component: str,
     frame_file: Path,
     output_path: Path,
     window_size: tuple[int, int],
@@ -235,31 +435,26 @@ def render_png(
     view: str,
     show_edges: bool,
 ) -> Path:
-    pv = load_pyvista()
-    mesh = pv.read(str(frame_file))
-    scalar_name = pick_scalar_name(mesh)
-
-    pv.global_theme.multi_samples = 0
-    plotter = pv.Plotter(off_screen=True, window_size=window_size)
-    plotter.disable_anti_aliasing()
-    plotter.set_background("white")
-    plotter.add_mesh(
-        mesh,
-        scalars=scalar_name,
+    context, scalar_values = load_render_context(frame_file, view)
+    fig, _, _, _ = create_render_figure(
+        context=context,
+        scalar_values=scalar_values,
+        case_name=case_name,
+        component=component,
+        frame_file=frame_file,
+        window_size=window_size,
         cmap=cmap,
         clim=clim,
         show_edges=show_edges,
-        lighting=False,
-        scalar_bar_args={"title": scalar_name.strip() or scalar_name},
     )
-    plotter.add_text(frame_file.name, font_size=14, color="black")
-    apply_view(plotter, mesh, view)
-    plotter.screenshot(str(output_path))
-    plotter.close()
+    fig.savefig(str(output_path), dpi=fig.dpi, facecolor="white")
+    plt.close(fig)
     return output_path
 
 
 def render_gif(
+    case_name: str,
+    component: str,
     selected_files: list[Path],
     output_path: Path,
     window_size: tuple[int, int],
@@ -269,60 +464,33 @@ def render_gif(
     view: str,
     show_edges: bool,
 ) -> Path:
-    pv = load_pyvista()
-    first_frame = pv.read(str(selected_files[0]))
-    scalar_name = pick_scalar_name(first_frame)
+    import imageio.v2 as imageio
 
-    if scalar_name not in first_frame.point_data:
-        raise ValueError(
-            f"当前字段 {scalar_name!r} 不在 point_data 里，"
-            "这版脚本只处理点标量时序。"
-        )
-
-    base_mesh = first_frame.copy(deep=True)
-    pv.global_theme.multi_samples = 0
-    plotter = pv.Plotter(off_screen=True, window_size=window_size)
-    plotter.disable_anti_aliasing()
-    plotter.set_background("white")
-    plotter.add_mesh(
-        base_mesh,
-        scalars=scalar_name,
+    context, initial_values = load_render_context(selected_files[0], view)
+    fig, _, mesh_artist, title = create_render_figure(
+        context=context,
+        scalar_values=initial_values,
+        case_name=case_name,
+        component=component,
+        frame_file=selected_files[0],
+        window_size=window_size,
         cmap=cmap,
         clim=clim,
         show_edges=show_edges,
-        lighting=False,
-        scalar_bar_args={"title": scalar_name.strip() or scalar_name},
     )
-    plotter.add_text("Generating GIF...", name="hint", position="upper_left", font_size=10)
-    apply_view(plotter, base_mesh, view)
-    plotter.open_gif(str(output_path), fps=max(1, int(round(fps))))
 
-    for index, file_path in enumerate(selected_files, start=1):
-        frame_mesh = pv.read(str(file_path))
-        current_scalar_name = pick_scalar_name(frame_mesh)
+    with imageio.get_writer(
+        str(output_path),
+        mode="I",
+        fps=max(1, int(round(fps))),
+    ) as writer:
+        for file_path in selected_files:
+            frame_values = validate_fixed_geometry(file_path, context.reference_points)
+            mesh_artist.set_array(frame_values)
+            title.set_text(build_frame_title(case_name, component, file_path))
+            writer.append_data(figure_to_rgb_array(fig))
 
-        if frame_mesh.n_points != base_mesh.n_points:
-            raise ValueError(
-                f"{file_path.name} 的点数与首帧不同: "
-                f"{frame_mesh.n_points} != {base_mesh.n_points}"
-            )
-        if not np.allclose(frame_mesh.points, base_mesh.points):
-            raise ValueError(
-                f"{file_path.name} 的几何与首帧不同。"
-                "这版脚本按固定几何、更新点标量的方式保存。"
-            )
-
-        base_mesh.point_data[scalar_name] = frame_mesh.point_data[current_scalar_name]
-        plotter.add_text(
-            f"{file_path.name} ({index}/{len(selected_files)})",
-            name="frame_label",
-            position="lower_left",
-            font_size=12,
-        )
-        plotter.render()
-        plotter.write_frame()
-
-    plotter.close()
+    plt.close(fig)
     return output_path
 
 
@@ -538,6 +706,8 @@ def main() -> None:
 
     if png_path is not None:
         png_written = render_png(
+            case_name=args.case_name,
+            component=args.component,
             frame_file=png_file,
             output_path=png_path,
             window_size=window_size,
@@ -550,6 +720,8 @@ def main() -> None:
 
     if gif_path is not None:
         gif_written = render_gif(
+            case_name=args.case_name,
+            component=args.component,
             selected_files=selected_files,
             output_path=gif_path,
             window_size=window_size,
