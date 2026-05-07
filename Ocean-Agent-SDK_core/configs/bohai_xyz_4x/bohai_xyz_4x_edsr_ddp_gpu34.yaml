@@ -1,0 +1,66 @@
+data:
+  auto_patch: true
+  data_path: /home/yc/CVPR26/DiffSR/NavierStokes_V1e-5_N1200_T20.mat
+  dataset_root: /data/Bohai_Sea/process_data
+  dyn_vars:
+  - Vx
+  - Vy
+  - Vz
+  eval_batchsize: 4
+  model_divisor: 1
+  name: OceanNPY
+  normalize: true
+  normalizer_type: PGN
+  patch_size: 64
+  sample_factor: 4
+  shape:
+  - 200
+  - 148
+  subset: false
+  subset_ratio: 0.1
+  test_ratio: 0.01
+  train_batchsize: 8
+  train_ratio: 0.98
+  valid_ratio: 0.01
+log:
+  log: true
+  log_dir: /data1/user/lz/wave_movie/testouts/EDSR
+  verbose: true
+  wandb: false
+  wandb_project: OceanSR-EDSR
+model:
+  hidden_channels: 128
+  in_channels: 3
+  n_res_blocks: 16
+  name: EDSR
+  out_channels: 3
+  upscale_factor: 4
+optimize:
+  lr: 0.001
+  optimizer: AdamW
+  weight_decay: 0.001
+schedule:
+  gamma: 0.5
+  scheduler: StepLR
+  step_size: 300
+train:
+  ckpt_freq: 10
+  ckpt_max: 5
+  ckpt_path: ''
+  cuda: true
+  device: 0
+  device_ids:
+  - 0
+  - 1
+  distribute: true
+  distribute_mode: DDP
+  epochs: 500
+  eval_freq: 50
+  gradient_checkpointing: true
+  load_ckpt: false
+  patience: 10
+  random_seed: 42
+  saving_best: true
+  saving_ckpt: true
+  seed: 42
+  use_amp: true

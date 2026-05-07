@@ -11,6 +11,7 @@ from save_wave_movie import (
     build_default_png_path,
     build_frame_title,
     cells_to_triangles,
+    compute_font_sizes,
     project_points_for_view,
     resolve_snapshot_files,
     select_snapshot_files,
@@ -142,12 +143,22 @@ class SaveWaveMovieTests(unittest.TestCase):
         fig, ax = plt.subplots()
         self.addCleanup(plt.close, fig)
 
-        apply_plain_axis_format(ax, "x (km)", "y (km)")
+        apply_plain_axis_format(ax, "x (km)", "y (km)", label_size=17, tick_size=15)
 
         self.assertEqual(ax.get_xlabel(), "x (km)")
         self.assertEqual(ax.get_ylabel(), "y (km)")
         self.assertFalse(ax.xaxis.get_major_formatter().get_useOffset())
         self.assertFalse(ax.yaxis.get_major_formatter().get_useOffset())
+
+    def test_compute_font_sizes_scales_with_height(self) -> None:
+        small = compute_font_sizes((1200, 900))
+        large = compute_font_sizes((1200, 1800))
+
+        self.assertGreaterEqual(large["title"], small["title"])
+        self.assertGreaterEqual(large["label"], small["label"])
+        self.assertGreaterEqual(large["tick"], small["tick"])
+        self.assertGreaterEqual(large["colorbar_label"], small["colorbar_label"])
+        self.assertGreaterEqual(large["colorbar_tick"], small["colorbar_tick"])
 
 
 if __name__ == "__main__":

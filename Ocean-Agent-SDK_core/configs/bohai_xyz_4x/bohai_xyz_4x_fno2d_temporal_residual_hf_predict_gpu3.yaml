@@ -1,0 +1,84 @@
+model:
+  name: FNO2d
+  residual_learning: true
+  modes1: [15, 12, 9, 9, 9]
+  modes2: [15, 12, 9, 9, 9]
+  width: 64
+  fc_dim: 128
+  layers: [16, 24, 24, 32, 32]
+  in_dim: 15
+  out_dim: 3
+  act: gelu
+  pos_dim: 2
+  upsample_factor: [4, 4]
+  in_channels: 15
+  out_channels: 3
+data:
+  name: OceanNPY
+  data_path: /home/yc/CVPR26/DiffSR/NavierStokes_V1e-5_N1200_T20.mat
+  sample_factor: 4
+  shape: [200, 148]
+  train_batchsize: 12
+  eval_batchsize: 12
+  train_ratio: 0.98
+  valid_ratio: 0.01
+  test_ratio: 0.01
+  subset: false
+  subset_ratio: 0.1
+  normalize: true
+  normalizer_type: PGN
+  dataset_root: /data/Bohai_Sea/process_data
+  dyn_vars: [Vx, Vy, Vz]
+  patch_size: null
+  auto_patch: false
+  model_divisor: 1
+  temporal_window: 5
+  temporal_stride: 1
+  temporal_boundary: clamp
+  residual_source_channels: [6, 7, 8]
+train:
+  random_seed: 42
+  cuda: true
+  device: 0
+  epochs: 1
+  patience: -1
+  eval_freq: 1
+  saving_best: false
+  load_ckpt: false
+  saving_ckpt: false
+  ckpt_freq: 1
+  ckpt_max: 1
+  distribute: false
+  distribute_mode: DDP
+  device_ids: [0]
+  seed: 42
+  use_amp: false
+  gradient_checkpointing: false
+  residual_learning: true
+  nan_guard: true
+  ckpt_path: /data1/user/lz/wave_movie/testouts/FNO2d_TemporalResidualHF/best_model.pth
+optimize:
+  optimizer: AdamW
+  lr: 0.0003
+  weight_decay: 0.001
+  grad_clip: 1.0
+  loss:
+    l1: 1.0
+    rel_l2: 0.2
+    gradient_l1: 0.25
+    fft_hf_l1: 0.05
+    peak_l1: 0.25
+    magnitude_l1: 0.1
+    peak_quantile: 0.95
+    peak_boost: 4.0
+    fft_cutoff: 0.125
+schedule:
+  scheduler: StepLR
+  step_size: 100
+  gamma: 0.5
+log:
+  verbose: true
+  log: true
+  log_dir: /data1/user/lz/wave_movie/testouts/FNO2d_TemporalResidualHF/full_predict_run
+  wandb: false
+  wandb_project: OceanSR-FNO2d-TemporalResidualHF

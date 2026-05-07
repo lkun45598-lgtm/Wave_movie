@@ -1,0 +1,91 @@
+data:
+  auto_patch: true
+  data_path: /home/yc/CVPR26/DiffSR/NavierStokes_V1e-5_N1200_T20.mat
+  dataset_root: /data/Bohai_Sea/process_data_sparsemask_2x
+  dyn_vars:
+    - Vz
+  hr_dyn_vars:
+    - Vz
+  lr_dyn_vars:
+    - Vz_sparse
+    - mask_observed
+  temporal_window: 5
+  temporal_stride: 1
+  temporal_boundary: clamp
+  eval_batchsize: 16
+  model_divisor: 8
+  name: OceanNPY
+  normalize: false
+  normalizer_type: none
+  num_workers: 4
+  patch_size: 64
+  sample_factor: 1
+  shape:
+    - 200
+    - 150
+  subset: false
+  subset_ratio: 0.1
+  train_batchsize: 64
+  train_ratio: 0.8
+  valid_ratio: 0.1
+  test_ratio: 0.1
+log:
+  log: true
+  log_dir: /data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardSparseOnly_Vz_Test
+  verbose: true
+  wandb: false
+  wandb_project: OceanSR-Temporal3DUNet-SparseMask2xHardSparseOnly-Vz-Test
+model:
+  channels_per_frame: 2
+  in_channels: 10
+  init_features: 16
+  name: Temporal3DUNet
+  out_channels: 1
+  sparse_known_constraint: true
+  sparse_known_value_channels:
+    - 4
+  sparse_known_mask_channel: 5
+  temporal_window: 5
+  upscale_factor: 1
+optimize:
+  grad_clip: 1.0
+  loss_mask_mode: active_missing
+  loss_mask_observed_channel: 5
+  loss_active_threshold: 0.005
+  loss:
+    gradient_l1: 0.1
+    l1: 1.0
+    peak_boost: 4.0
+    peak_l1: 1.0
+    peak_quantile: 0.9
+    rel_l2: 0.0
+  lr: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.001
+schedule:
+  gamma: 0.5
+  scheduler: StepLR
+  step_size: 300
+train:
+  ckpt_freq: 25
+  ckpt_max: 4
+  ckpt_path: ''
+  cuda: true
+  device: 0
+  device_ids:
+    - 0
+  distribute: false
+  distribute_mode: DP
+  epochs: 50
+  eval_freq: 10
+  gradient_checkpointing: false
+  load_ckpt: false
+  nan_guard: true
+  patience: -1
+  random_seed: 42
+  saving_best: true
+  saving_ckpt: true
+  saving_name: Temporal3DUNet_SparseMask2xHardSparseOnly_Vz_Test
+  saving_path: /data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardSparseOnly_Vz_Test
+  seed: 42
+  use_amp: true

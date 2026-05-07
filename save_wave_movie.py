@@ -309,9 +309,27 @@ def expand_axis_limits(values: np.ndarray) -> tuple[float, float]:
     return lower - padding, upper + padding
 
 
-def apply_plain_axis_format(ax: plt.Axes, x_label: str, y_label: str) -> None:
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
+def compute_font_sizes(window_size: tuple[int, int]) -> dict[str, int]:
+    _, height = window_size
+    return {
+        "title": int(min(28, max(18, round(height / 70)))),
+        "label": int(min(20, max(14, round(height / 95)))),
+        "tick": int(min(16, max(12, round(height / 120)))),
+        "colorbar_label": int(min(20, max(14, round(height / 95)))),
+        "colorbar_tick": int(min(16, max(11, round(height / 130)))),
+        "title_pad": int(min(18, max(12, round(height / 130)))),
+    }
+
+
+def apply_plain_axis_format(
+    ax: plt.Axes,
+    x_label: str,
+    y_label: str,
+    label_size: int,
+    tick_size: int,
+) -> None:
+    ax.set_xlabel(x_label, fontsize=label_size)
+    ax.set_ylabel(y_label, fontsize=label_size)
     ax.set_aspect("equal", adjustable="box")
 
     x_formatter = ScalarFormatter(useOffset=False)
@@ -322,7 +340,7 @@ def apply_plain_axis_format(ax: plt.Axes, x_label: str, y_label: str) -> None:
     ax.yaxis.set_major_formatter(y_formatter)
     ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
-    ax.tick_params(axis="both", labelsize=11)
+    ax.tick_params(axis="both", labelsize=tick_size)
 
 
 def load_render_context(frame_file: Path, view: str) -> tuple[RenderContext, np.ndarray]:
@@ -377,15 +395,16 @@ def create_render_figure(
 ) -> tuple[plt.Figure, plt.Axes, object, plt.Text]:
     width, height = window_size
     dpi = 100
+    font_sizes = compute_font_sizes(window_size)
     fig = plt.figure(figsize=(width / dpi, height / dpi), dpi=dpi, facecolor="white")
     grid = fig.add_gridspec(
         nrows=1,
         ncols=2,
         width_ratios=(24, 1.2),
-        left=0.08,
-        right=0.92,
-        bottom=0.11,
-        top=0.90,
+        left=0.12,
+        right=0.91,
+        bottom=0.10,
+        top=0.92,
         wspace=0.08,
     )
     ax = fig.add_subplot(grid[0, 0])
@@ -404,16 +423,22 @@ def create_render_figure(
 
     ax.set_xlim(*context.x_limits)
     ax.set_ylim(*context.y_limits)
-    apply_plain_axis_format(ax, context.x_label, context.y_label)
+    apply_plain_axis_format(
+        ax,
+        context.x_label,
+        context.y_label,
+        label_size=font_sizes["label"],
+        tick_size=font_sizes["tick"],
+    )
     title = ax.set_title(
         build_frame_title(case_name, component, frame_file),
-        fontsize=16,
-        pad=12,
+        fontsize=font_sizes["title"],
+        pad=font_sizes["title_pad"],
     )
 
     colorbar = fig.colorbar(mesh_artist, cax=cax, orientation="vertical")
-    colorbar.set_label(component, fontsize=12)
-    colorbar.ax.tick_params(labelsize=10)
+    colorbar.set_label(component, fontsize=font_sizes["colorbar_label"])
+    colorbar.ax.tick_params(labelsize=font_sizes["colorbar_tick"])
 
     return fig, ax, mesh_artist, title
 

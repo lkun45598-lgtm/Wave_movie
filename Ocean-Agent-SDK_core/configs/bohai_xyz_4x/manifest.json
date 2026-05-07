@@ -1,0 +1,139 @@
+{
+  "dataset_root": "/data/Bohai_Sea/process_data",
+  "output_dir": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x",
+  "dynamic_variables": [
+    "Vx",
+    "Vy",
+    "Vz"
+  ],
+  "scale": 4,
+  "normalizer_type": "PGN",
+  "epochs": 100,
+  "models": [
+    {
+      "model": "FNO2d",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_fno2d.yaml",
+      "patch_size": null,
+      "batch_size": 4,
+      "eval_batch_size": 4,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/fno2d_xyz_4x"
+    },
+    {
+      "model": "UNet2d",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_unet2d.yaml",
+      "patch_size": 64,
+      "batch_size": 8,
+      "eval_batch_size": 4,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/unet2d_xyz_4x"
+    },
+    {
+      "model": "M2NO2d",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_m2no2d.yaml",
+      "patch_size": 64,
+      "batch_size": 2,
+      "eval_batch_size": 2,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/m2no2d_xyz_4x"
+    },
+    {
+      "model": "Galerkin_Transformer",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_galerkin_transformer.yaml",
+      "patch_size": 64,
+      "batch_size": 4,
+      "eval_batch_size": 4,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/galerkin_transformer_xyz_4x"
+    },
+    {
+      "model": "MWT2d",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_mwt2d.yaml",
+      "patch_size": null,
+      "batch_size": 2,
+      "eval_batch_size": 2,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/mwt2d_xyz_4x"
+    },
+    {
+      "model": "SRNO",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_srno.yaml",
+      "patch_size": 64,
+      "batch_size": 4,
+      "eval_batch_size": 4,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/srno_xyz_4x"
+    },
+    {
+      "model": "Swin_Transformer",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_swin_transformer.yaml",
+      "patch_size": 64,
+      "batch_size": 4,
+      "eval_batch_size": 4,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/swin_transformer_xyz_4x"
+    },
+    {
+      "model": "EDSR",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_edsr.yaml",
+      "patch_size": 64,
+      "batch_size": 8,
+      "eval_batch_size": 4,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/edsr_xyz_4x"
+    },
+    {
+      "model": "HiNOTE",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_hinote.yaml",
+      "patch_size": null,
+      "batch_size": 2,
+      "eval_batch_size": 2,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/hinote_xyz_4x"
+    },
+    {
+      "model": "SwinIR",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_swinir.yaml",
+      "patch_size": 64,
+      "batch_size": 4,
+      "eval_batch_size": 4,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/swinir_xyz_4x"
+    },
+    {
+      "model": "DDPM",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_ddpm.yaml",
+      "patch_size": 64,
+      "batch_size": 1,
+      "eval_batch_size": 1,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/ddpm_xyz_4x"
+    },
+    {
+      "model": "SR3",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_sr3.yaml",
+      "patch_size": 64,
+      "batch_size": 1,
+      "eval_batch_size": 1,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/sr3_xyz_4x"
+    },
+    {
+      "model": "MG-DDPM",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_mg_ddpm.yaml",
+      "patch_size": 64,
+      "batch_size": 1,
+      "eval_batch_size": 1,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/mg_ddpm_xyz_4x"
+    },
+    {
+      "model": "Resshift",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_resshift.yaml",
+      "patch_size": 64,
+      "batch_size": 1,
+      "eval_batch_size": 1,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/resshift_xyz_4x"
+    },
+    {
+      "model": "ReMiG",
+      "config": "Ocean-Agent-SDK_core/configs/bohai_xyz_4x/bohai_xyz_4x_remig.yaml",
+      "patch_size": 64,
+      "batch_size": 1,
+      "eval_batch_size": 1,
+      "log_dir": "/data/Bohai_Sea/process_data/training_outputs/remig_xyz_4x"
+    }
+  ],
+  "notes": [
+    "All configs target OceanNPY data under /data/Bohai_Sea/process_data.",
+    "Patch-sensitive models use 64x64 HR patches and 16x16 LR patches.",
+    "FNO2d, MWT2d, and HiNOTE keep full-image training by default."
+  ]
+}

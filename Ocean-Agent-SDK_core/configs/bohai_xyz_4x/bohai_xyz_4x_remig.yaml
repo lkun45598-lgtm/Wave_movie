@@ -1,0 +1,143 @@
+model:
+  name: ReMiG
+  in_channels: 3
+  out_channels: 3
+  in_channel: 6
+  out_channel: 3
+  image_size: 64
+  raw_image_size: 64
+  scale: 4
+resshift:
+  model:
+    target: models.remig.unet.UNetModelSwin
+    ckpt_path: null
+    params:
+      image_size: 64
+      in_channels: 3
+      model_channels: 64
+      out_channels: 3
+      attention_resolutions:
+      - 16
+      dropout: 0
+      channel_mult:
+      - 1
+      - 2
+      - 2
+      - 4
+      num_res_blocks:
+      - 2
+      - 2
+      - 2
+      - 2
+      conv_resample: true
+      dims: 2
+      use_fp16: false
+      num_head_channels: 32
+      use_scale_shift_norm: true
+      resblock_updown: false
+      swin_depth: 2
+      swin_embed_dim: 192
+      window_size: 8
+      mlp_ratio: 4
+      cond_lq: true
+      lq_size: 64
+  diffusion:
+    target: models.remig.gaussian_diffusion.GaussianDiffusion
+    params:
+      sf: 4
+      schedule_name: exponential
+      schedule_kwargs:
+        power: 0.3
+      etas_end: 0.99
+      steps: 15
+      min_noise_level: 0.04
+      kappa: 2.0
+      weighted_mse: false
+      predict_type: xstart
+      timestep_respacing: null
+      scale_factor: 1.0
+      normalize_input: false
+      latent_flag: false
+      m2no_params:
+        in_channels: 3
+        base_channels: 64
+        k: 4
+        c: 4
+        grid_levels:
+        - 1
+        - 1
+        - 1
+        resolutions:
+        - 64
+        - 64
+        bias: true
+        padding_mode: zeros
+data:
+  name: OceanNPY
+  data_path: /ai/gno/DATA/ns/ns_V1e-5_N1200_T20.mat
+  sample_factor: 4
+  shape:
+  - 200
+  - 148
+  train_batchsize: 1
+  eval_batchsize: 1
+  train_ratio: 0.98
+  valid_ratio: 0.01
+  test_ratio: 0.01
+  subset: false
+  subset_ratio: 0.1
+  normalize: true
+  normalizer_type: PGN
+  dataset_root: /data/Bohai_Sea/process_data
+  dyn_vars:
+  - Vx
+  - Vy
+  - Vz
+  patch_size: 64
+  auto_patch: true
+  model_divisor: 32
+train:
+  random_seed: 42
+  cuda: true
+  device: 0
+  epochs: 500
+  patience: 10
+  eval_freq: 50
+  saving_best: true
+  load_ckpt: false
+  saving_ckpt: false
+  ckpt_freq: 100
+  ckpt_max: 3
+  distribute: false
+  distribute_mode: DDP
+  device_ids:
+  - 0
+  seed: 42
+  use_amp: true
+  gradient_checkpointing: true
+  ckpt_path: ''
+optimize:
+  optimizer: AdamW
+  lr: 0.0001
+  weight_decay: 0.001
+schedule:
+  scheduler: StepLR
+  step_size: 300
+  gamma: 0.5
+log:
+  verbose: true
+  log: true
+  log_dir: /data/Bohai_Sea/process_data/training_outputs/remig_xyz_4x
+  wandb: false
+  wandb_project: OceanSR-ReMiG
+beta_schedule:
+  train:
+    schedule: linear
+    n_timestep: 2000
+    linear_start: 0.0001
+    linear_end: 0.02
+  val:
+    schedule: linear
+    n_timestep: 2000
+    linear_start: 0.0001
+    linear_end: 0.02

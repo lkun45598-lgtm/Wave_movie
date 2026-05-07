@@ -1,0 +1,27 @@
+{
+  "combined_metrics": "/data1/user/lz/wave_movie/testouts/bohai_vz_sparsemask2x_compare_residual_active_missing/combined_metrics_vz.json",
+  "generated_figures_count": 23,
+  "generated_figures_sample": [
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000010.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000020.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000030.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000040.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000050.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000060.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000070.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000080.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000090.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000100.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardResidualActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000010.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardResidualActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000020.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardResidualActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000030.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardResidualActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000040.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardResidualActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000050.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardResidualActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000060.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardResidualActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000070.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardResidualActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000080.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardResidualActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000090.png",
+    "/data1/user/lz/wave_movie/testouts/Temporal3DUNet_SparseMask2xHardResidualActiveMissing_Vz_Test/figs_eval_every10_vz_maxerr/S1_TTTZ_000100.png"
+  ],
+  "skipped_models": []
+}

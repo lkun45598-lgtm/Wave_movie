@@ -1,0 +1,89 @@
+data:
+  auto_patch: false
+  data_path: /home/yc/CVPR26/DiffSR/NavierStokes_V1e-5_N1200_T20.mat
+  dataset_root: /data/Bohai_Sea/process_data
+  dyn_vars:
+  - Vx
+  - Vy
+  - Vz
+  eval_batchsize: 4
+  model_divisor: 1
+  name: OceanNPY
+  normalize: true
+  normalizer_type: PGN
+  patch_size: null
+  sample_factor: 4
+  shape:
+  - 200
+  - 148
+  subset: false
+  subset_ratio: 0.1
+  test_ratio: 0.01
+  train_batchsize: 4
+  train_ratio: 0.98
+  valid_ratio: 0.01
+log:
+  log: true
+  log_dir: /data/Bohai_Sea/process_data/training_outputs/FNO2d_xyz_4x
+  verbose: true
+  wandb: false
+  wandb_project: OceanSR-FNO2d
+model:
+  act: gelu
+  fc_dim: 128
+  in_channels: 3
+  in_dim: 3
+  layers:
+  - 16
+  - 24
+  - 24
+  - 32
+  - 32
+  modes1:
+  - 15
+  - 12
+  - 9
+  - 9
+  - 9
+  modes2:
+  - 15
+  - 12
+  - 9
+  - 9
+  - 9
+  name: FNO2d
+  out_channels: 3
+  out_dim: 3
+  pos_dim: 2
+  upsample_factor:
+  - 4
+  - 4
+  width: 64
+optimize:
+  lr: 0.001
+  optimizer: AdamW
+  weight_decay: 0.001
+schedule:
+  gamma: 0.5
+  scheduler: StepLR
+  step_size: 300
+train:
+  ckpt_freq: 100
+  ckpt_max: 5
+  ckpt_path: ''
+  cuda: true
+  device: 0
+  device_ids:
+  - 0
+  distribute: false
+  distribute_mode: DDP
+  epochs: 100
+  eval_freq: 5
+  gradient_checkpointing: true
+  load_ckpt: false
+  patience: 10
+  random_seed: 42
+  saving_best: true
+  saving_ckpt: false
+  seed: 42
+  use_amp: false

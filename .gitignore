@@ -4,3 +4,29 @@ visualizations/
 __pycache__/
 tests/__pycache__/
 *.pyc
+
+# Local datasets and generated experiment outputs
+testouts/
+outputs/
+predictions/
+figs_eval*/
+full_predict_run/
+*.pth
+*.pt
+*.ckpt
+*.npz
+*.log
+*.pid
+
+# Python/test caches
+.pytest_cache/
+Ocean-Agent-SDK_core/.pytest_cache/
+Ocean-Agent-SDK_core/**/__pycache__/
+
+# Frontend/node caches if the SDK helper is installed locally
+node_modules/
+Ocean-Agent-SDK_core/node_modules/
+
+# Local publishing scratch space and screenshots
+_publish/
+屏幕截图*.png

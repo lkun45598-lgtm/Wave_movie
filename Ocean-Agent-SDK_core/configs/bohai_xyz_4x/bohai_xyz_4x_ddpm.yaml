@@ -1,0 +1,94 @@
+model:
+  name: DDPM
+  in_channel: 6
+  out_channel: 3
+  inner_channel: 64
+  channel_mults:
+  - 1
+  - 1
+  - 2
+  - 2
+  - 4
+  - 4
+  attn_res:
+  - 16
+  res_blocks: 2
+  dropout: 0.2
+  image_size: 64
+  channels: 1
+  conditional: true
+  n_iter: 10000
+  loss_type: lploss
+  in_channels: 3
+  out_channels: 3
+  raw_image_size: 64
+  scale: 4
+data:
+  name: OceanNPY
+  data_path: /ai/gno/DATA/ns/ns_V1e-5_N1200_T20.mat
+  sample_factor: 4
+  shape:
+  - 200
+  - 148
+  train_batchsize: 1
+  eval_batchsize: 1
+  train_ratio: 0.98
+  valid_ratio: 0.01
+  test_ratio: 0.01
+  subset: false
+  subset_ratio: 0.1
+  normalize: true
+  normalizer_type: PGN
+  dataset_root: /data/Bohai_Sea/process_data
+  dyn_vars:
+  - Vx
+  - Vy
+  - Vz
+  patch_size: 64
+  auto_patch: true
+  model_divisor: 32
+train:
+  random_seed: 42
+  cuda: true
+  device: 0
+  epochs: 500
+  patience: 10
+  eval_freq: 50
+  saving_best: true
+  load_ckpt: false
+  saving_ckpt: false
+  ckpt_freq: 100
+  ckpt_max: 3
+  distribute: false
+  distribute_mode: DDP
+  device_ids:
+  - 0
+  seed: 42
+  use_amp: true
+  gradient_checkpointing: true
+  ckpt_path: ''
+optimize:
+  optimizer: AdamW
+  lr: 0.0001
+  weight_decay: 0.001
+schedule:
+  scheduler: StepLR
+  step_size: 300
+  gamma: 0.5
+log:
+  verbose: true
+  log: true
+  log_dir: /data/Bohai_Sea/process_data/training_outputs/ddpm_xyz_4x
+  wandb: false
+  wandb_project: OceanSR-DDPM
+beta_schedule:
+  train:
+    schedule: linear
+    n_timestep: 2000
+    linear_start: 0.0001
+    linear_end: 0.02
+  val:
+    schedule: linear
+    n_timestep: 2000
+    linear_start: 0.0001
+    linear_end: 0.02

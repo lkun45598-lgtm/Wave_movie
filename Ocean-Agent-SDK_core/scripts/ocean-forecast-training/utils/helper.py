@@ -1,0 +1,125 @@
+# utils/helper.py
+import os
+
+import yaml
+import torch
+import shutil
+import logging
+import random
+import numpy as np
+
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+
+def set_seed(seed: int) -> None:
+    """
+    Set random seed for Python, NumPy and PyTorch to improve reproducibility.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    # Optional, but usually helpful for reproducibility
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+
+def set_device(cuda: bool, device: int) -> torch.device:
+    """
+    Select computation device.
+
+    Args:
+        cuda: Whether to use CUDA if available.
+        device: GPU index when cuda is True.
+
+    Returns:
+        torch.device: The selected device.
+    """
+    if cuda and torch.cuda.is_available():
+        torch.cuda.set_device(device=device)
+        return torch.device("cuda", device)
+    return torch.device("cpu")
+
+
+def load_config(args: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Load a YAML config file and merge it into the args dict.
+
+    CLI args stay in 'args', and top-level keys from the YAML
+    are copied into args, possibly overriding existing keys
+    with the same name.
+    """
+    config_path = args["config"]
+    with open(config_path, "r") as stream:
+        config = yaml.safe_load(stream) or {}
+
+    # Shallow merge: top-level keys from YAML overwrite/extend args
+    for k, v in config.items():
+        args[k] = v
+    return args
+
+
+def save_config(args: Dict[str, Any], saving_path: str) -> None:
+    """
+    Save the full args dict (including merged config) as config.yaml.
+    """
+    saving_dir = Path(saving_path)
+    saving_dir.mkdir(parents=True, exist_ok=True)
+    config_file = saving_dir / "config.yaml"
+
+    with config_file.open("w") as f:
+        yaml.safe_dump(args, f, sort_keys=False)
+
+
+def get_dir_path(args, create_dir=True):
+    """直接使用 log_dir 作为输出目录，不再创建子目录"""
+    path = args['log']['log_dir']
+    if create_dir:
+        os.makedirs(path, exist_ok=True)
+    return path, os.path.basename(path)
+
+
+def set_up_logger(args: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Initialize logging to both a file (train.log) and the console.
+
+    Returns:
+        log_dir (str): directory where logs are saved.
+        dir_name (str): short name for this run.
+    """
+    log_dir, dir_name = get_dir_path(args)
+    log_dir_path = Path(log_dir)
+    log_dir_path.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir_path / "train.log"
+
+    # Get root logger and reset handlers to avoid duplicate logs
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)-8s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # File handler
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+    # Console handler
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    logger.info("Saving logs in: %s", log_dir)
+
+    return log_dir, dir_name

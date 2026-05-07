@@ -1,0 +1,81 @@
+data:
+  auto_patch: false
+  data_path: /home/yc/CVPR26/DiffSR/NavierStokes_V1e-5_N1200_T20.mat
+  dataset_root: /data/Bohai_Sea/process_data_point_4x
+  dyn_vars:
+  - Vz
+  eval_batchsize: 8
+  model_divisor: 1
+  name: OceanNPY
+  normalize: true
+  normalizer_type: PGN
+  patch_size: null
+  residual_source_channels:
+  - 2
+  sample_factor: 4
+  shape:
+  - 200
+  - 148
+  subset: false
+  subset_ratio: 0.1
+  temporal_boundary: clamp
+  temporal_stride: 1
+  temporal_window: 5
+  test_ratio: 0.01
+  train_batchsize: 8
+  train_ratio: 0.98
+  valid_ratio: 0.01
+log:
+  log: true
+  log_dir: /data1/user/lz/wave_movie/testouts/EDSR_Temporal5Residual_PGN_Vz_POINT/full_predict_run
+  verbose: true
+  wandb: false
+  wandb_project: OceanSR-EDSR-Temporal5Residual-PGN-Vz-POINT
+model:
+  in_channels: 5
+  name: EDSR
+  n_feats: 64
+  n_res_blocks: 16
+  out_channels: 1
+  residual_learning: true
+  upscale_factor: 4
+optimize:
+  grad_clip: 1.0
+  loss:
+    fft_cutoff: 0.125
+    fft_hf_l1: 0.05
+    gradient_l1: 0.25
+    l1: 1.0
+    peak_boost: 4.0
+    peak_l1: 0.25
+    peak_quantile: 0.95
+    rel_l2: 0.2
+  lr: 0.0001
+  optimizer: AdamW
+  weight_decay: 0.001
+schedule:
+  gamma: 0.5
+  scheduler: StepLR
+  step_size: 300
+train:
+  ckpt_freq: 50
+  ckpt_max: 5
+  ckpt_path: /data1/user/lz/wave_movie/testouts/EDSR_Temporal5Residual_PGN_Vz_POINT/best_model.pth
+  cuda: true
+  device: 0
+  device_ids:
+  - 0
+  distribute: false
+  distribute_mode: DDP
+  epochs: 500
+  eval_freq: 50
+  gradient_checkpointing: true
+  load_ckpt: false
+  nan_guard: true
+  patience: -1
+  random_seed: 42
+  residual_learning: true
+  saving_best: true
+  saving_ckpt: false
+  seed: 42
+  use_amp: true

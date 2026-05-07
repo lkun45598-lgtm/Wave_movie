@@ -1,0 +1,74 @@
+model:
+  name: Galerkin_Transformer
+  in_dim: 3
+  out_dim: 3
+  ref: 8
+  n_hidden: 96
+  n_layers: 6
+  n_heads: 8
+  dropout: 0.0
+  mlp_ratio: 4
+  act: gelu
+  upsample_factor:
+  - 4
+  - 4
+  in_channels: 3
+  out_channels: 3
+data:
+  name: OceanNPY
+  data_path: /home/yc/CVPR26/DiffSR/NavierStokes_V1e-5_N1200_T20.mat
+  sample_factor: 4
+  shape:
+  - 200
+  - 148
+  train_batchsize: 4
+  eval_batchsize: 4
+  train_ratio: 0.98
+  valid_ratio: 0.01
+  test_ratio: 0.01
+  subset: false
+  subset_ratio: 0.1
+  normalize: true
+  normalizer_type: PGN
+  dataset_root: /data/Bohai_Sea/process_data
+  dyn_vars:
+  - Vx
+  - Vy
+  - Vz
+  patch_size: 64
+  auto_patch: true
+  model_divisor: 1
+train:
+  random_seed: 42
+  cuda: true
+  device: 0
+  epochs: 500
+  patience: 10
+  eval_freq: 50
+  saving_best: true
+  load_ckpt: false
+  saving_ckpt: false
+  ckpt_freq: 100
+  ckpt_max: 5
+  distribute: false
+  distribute_mode: DDP
+  device_ids:
+  - 0
+  seed: 42
+  use_amp: true
+  gradient_checkpointing: true
+  ckpt_path: ''
+optimize:
+  optimizer: AdamW
+  lr: 0.001
+  weight_decay: 0.001
+schedule:
+  scheduler: StepLR
+  step_size: 300
+  gamma: 0.5
+log:
+  verbose: true
+  log: true
+  log_dir: /data/Bohai_Sea/process_data/training_outputs/galerkin_transformer_xyz_4x
+  wandb: false
+  wandb_project: OceanSR-Galerkin_Transformer
