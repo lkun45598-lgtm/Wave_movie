@@ -28,6 +28,12 @@ Explicit residual reconstruction:
 Ocean-Agent-SDK_core/configs/bohai_xyz_2x/bohai_vz_sparsemask_2x_temporal3dunet_residual_active_missing_test_gpu0.yaml
 ```
 
+Mask-aware sparse observation reconstruction:
+
+```bash
+Ocean-Agent-SDK_core/configs/bohai_xyz_2x/bohai_vz_sparsemask_2x_temporal3dunet_masked_observed_gpu0.yaml
+```
+
 The direct model predicts the target field directly:
 
 ```text
@@ -39,6 +45,14 @@ The explicit residual model predicts a correction on top of the center-frame int
 ```text
 Vz_sr = Vz_interp(t) + f(Vz_sparse, Vz_interp, mask)
 ```
+
+The mask-aware sparse observation config keeps the same input form, but trains with:
+
+```text
+loss = active_missing_l1 + peak_l1 + gradient_l1 + observed_l1
+```
+
+In that config, the observed-point hard constraint is applied during inference/evaluation, while training keeps the model output unconstrained so `observed_l1` still has gradient.
 
 For the 5-frame input, the center-frame channels are:
 
@@ -91,6 +105,14 @@ CUDA_VISIBLE_DEVICES=0 /home/lz/miniconda3/envs/pytorch/bin/python \
   --config Ocean-Agent-SDK_core/configs/bohai_xyz_2x/bohai_vz_sparsemask_2x_temporal3dunet_residual_active_missing_test_gpu0.yaml
 ```
 
+Train the mask-aware sparse observation Temporal3DUNet on GPU0:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 /home/lz/miniconda3/envs/pytorch/bin/python \
+  Ocean-Agent-SDK_core/scripts/ocean-SR-training-masked/main.py \
+  --config Ocean-Agent-SDK_core/configs/bohai_xyz_2x/bohai_vz_sparsemask_2x_temporal3dunet_masked_observed_gpu0.yaml
+```
+
 Predict full-frame test outputs:
 
 ```bash
@@ -141,6 +163,7 @@ Full predictions, checkpoints, logs, and large `testouts/` outputs are intention
 
 ## Next Experiments
 
+- Run the mask-aware sparse observation config and compare it against the current direct/residual runs on missing, active-missing, peak ratio, and max-error metrics.
 - Compare LR construction methods: sparse-only, nearest interpolation, linear interpolation, anti-aliased/downsampled baselines, and residual variants.
 - Track primary metrics on `missing`, `active-missing`, peak ratio, peak location error, and temporal consistency instead of relying only on full-field RMSE.
 - Add stronger peak-aware and temporal-consistency losses if the focus is event-initial frames and strong wavefront reconstruction.

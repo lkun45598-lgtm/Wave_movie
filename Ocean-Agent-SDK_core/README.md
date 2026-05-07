@@ -89,6 +89,18 @@ npm run dev
 
 服务将在 `http://localhost:8787` 启动。
 
+## Bohai Sea SR Experiment
+
+If you want to run the current Bohai Vz sparse-observation experiment, use:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 /home/lz/miniconda3/envs/pytorch/bin/python \
+  scripts/ocean-SR-training-masked/main.py \
+  --config configs/bohai_xyz_2x/bohai_vz_sparsemask_2x_temporal3dunet_masked_observed_gpu0.yaml
+```
+
+This config trains on `Vz_sparse + Vz_interp + mask_observed`, keeps the active-missing loss mask, adds an `observed_l1` term, and applies the sparse known constraint only during inference/evaluation.
+
 ## API 接口
 
 ### 1. 健康检查

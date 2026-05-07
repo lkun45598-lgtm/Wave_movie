@@ -306,6 +306,12 @@ class BaseTrainer:
                 self.train_args.get('sparse_known_constraint', False),
             )
         )
+        self.sparse_known_constraint_train = bool(
+            self.model_args.get(
+                'sparse_known_constraint_train',
+                self.train_args.get('sparse_known_constraint_train', True),
+            )
+        )
         self.sparse_known_value_channels = self.model_args.get(
             'sparse_known_value_channels',
             self.data_args.get('sparse_known_value_channels', None),
@@ -405,9 +411,10 @@ class BaseTrainer:
         if self.sparse_known_constraint:
             self.main_log(
                 "Sparse known constraint: ENABLED "
-                "(observed_value_channels={}, mask_channel={})".format(
+                "(observed_value_channels={}, mask_channel={}, train_apply={})".format(
                     self.sparse_known_value_channels,
                     self.sparse_known_mask_channel,
+                    self.sparse_known_constraint_train,
                 )
             )
         if self.loss_mask_mode not in {"static", "valid", "base"}:
@@ -996,12 +1003,29 @@ class BaseTrainer:
             with torch.amp.autocast('cuda', enabled=self.use_amp):
                 if self.gradient_checkpointing:
                     y_pred = torch.utils.checkpoint.checkpoint(
-                        self.inference, x, y, use_reentrant=False
+                        lambda xi, yi: self.inference(
+                            xi,
+                            yi,
+                            apply_known_constraint=self.sparse_known_constraint_train,
+                        ),
+                        x,
+                        y,
+                        use_reentrant=False,
                     )
                 else:
-                    y_pred = self.inference(x, y)
+                    y_pred = self.inference(
+                        x,
+                        y,
+                        apply_known_constraint=self.sparse_known_constraint_train,
+                    )
                 loss_mask = self.build_loss_mask(mask_hr, x, y)
-                loss = self.loss_fn(y_pred, y, mask=loss_mask)
+                loss = self.loss_fn(
+                    y_pred,
+                    y,
+                    mask=loss_mask,
+                    input_tensor=x,
+                    observed_mask_channel=self.loss_mask_observed_channel,
+                )
             if self.nan_guard and not torch.isfinite(loss).all():
                 raise FloatingPointError(
                     f"Non-finite training loss at epoch={epoch}, batch={i}: {loss.item()}"
@@ -1072,7 +1096,7 @@ class BaseTrainer:
         else:  # [B, C, H, W]
             return x[:, :, :h, :w]
 
-    def inference(self, x, y, **kwargs):
+    def inference(self, x, y, apply_known_constraint=True, **kwargs):
         x_input = x
         x, orig_h, orig_w = self._pad_to_divisible(x, self.model_divisor, channel_last=True)
         result = self.model(x)
@@ -1085,7 +1109,7 @@ class BaseTrainer:
                 normalizer=self.normalizer,
                 source_channels=self.residual_source_channels,
             )
-        if self.sparse_known_constraint:
+        if self.sparse_known_constraint and apply_known_constraint:
             result = apply_sparse_known_constraint(
                 result,
                 x_input,
@@ -1131,7 +1155,13 @@ class BaseTrainer:
                     y = _norm.decode(y)
                 # 逐 batch 计算 loss 和指标，避免在 GPU 上累积全部验证结果
                 loss_mask = self.build_loss_mask(mask_patch, x, y)
-                batch_loss = self.loss_fn(y_pred, y, mask=loss_mask)
+                batch_loss = self.loss_fn(
+                    y_pred,
+                    y,
+                    mask=loss_mask,
+                    input_tensor=x,
+                    observed_mask_channel=self.loss_mask_observed_channel,
+                )
                 loss_record.update({"{}_loss".format(split): batch_loss.item()})
                 self.evaluator(y_pred, y, record=loss_record, mask=loss_mask)
                 del y_pred, batch_loss  # 立即释放显存

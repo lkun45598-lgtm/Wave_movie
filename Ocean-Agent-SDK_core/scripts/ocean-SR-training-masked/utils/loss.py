@@ -204,6 +204,7 @@ class MaskedCompositeSRLoss(object):
       - fft_hf_l1: high-frequency Fourier magnitude L1
       - peak_l1: L1 with larger weights on high-amplitude target regions
       - magnitude_l1: vector-magnitude L1 for multi-component velocity fields
+      - observed_l1: L1 on sparse observed locations from the input mask
     """
 
     _CONTROL_KEYS = {"peak_quantile", "peak_boost", "fft_cutoff"}
@@ -313,6 +314,48 @@ class MaskedCompositeSRLoss(object):
         target_mag = torch.linalg.vector_norm(target, ord=2, dim=-1, keepdim=True)
         return self._masked_mean(torch.abs(pred_mag - target_mag), mask)
 
+    @staticmethod
+    def _observed_mask_from_input(input_tensor, target, observed_mask_channel):
+        if input_tensor is None:
+            raise ValueError("observed_l1 requires input_tensor to be passed to the loss")
+        if observed_mask_channel is None:
+            raise ValueError("observed_l1 requires observed_mask_channel")
+
+        observed_mask = input_tensor[..., int(observed_mask_channel)]
+        if observed_mask.ndim == target.ndim - 1:
+            observed_mask = observed_mask.unsqueeze(-1)
+        if observed_mask.ndim != target.ndim:
+            raise ValueError(
+                "Observed mask must be channel-last and broadcastable to target, got "
+                f"{tuple(observed_mask.shape)} for target {tuple(target.shape)}"
+            )
+
+        if observed_mask.shape[1:3] != target.shape[1:3]:
+            observed_mask = F.interpolate(
+                observed_mask.permute(0, 3, 1, 2).float(),
+                size=target.shape[1:3],
+                mode="nearest",
+            ).permute(0, 2, 3, 1)
+
+        if observed_mask.shape[-1] != 1:
+            observed_mask = observed_mask.any(dim=-1, keepdim=True)
+        if observed_mask.shape[0] == 1 and target.shape[0] != 1:
+            observed_mask = observed_mask.expand(target.shape[0], -1, -1, -1)
+        elif observed_mask.shape[0] != target.shape[0]:
+            raise ValueError(
+                "Observed mask batch dimension does not match target: "
+                f"{observed_mask.shape[0]} != {target.shape[0]}"
+            )
+        return observed_mask.to(device=target.device) > 0.5
+
+    def _observed_l1(self, pred, target, input_tensor=None, observed_mask_channel=None):
+        observed_mask = self._observed_mask_from_input(
+            input_tensor,
+            target,
+            observed_mask_channel,
+        )
+        return self._masked_mean(torch.abs(pred - target), observed_mask)
+
     def __call__(self, pred, target, mask=None, **kwargs):
         total = pred.new_tensor(0.0)
 
@@ -330,6 +373,13 @@ class MaskedCompositeSRLoss(object):
             total = total + self._weight("peak_l1") * self._peak_l1(pred, target, mask)
         if self._weight("magnitude_l1"):
             total = total + self._weight("magnitude_l1") * self._magnitude_l1(pred, target, mask)
+        if self._weight("observed_l1"):
+            total = total + self._weight("observed_l1") * self._observed_l1(
+                pred,
+                target,
+                input_tensor=kwargs.get("input_tensor", kwargs.get("x")),
+                observed_mask_channel=kwargs.get("observed_mask_channel"),
+            )
 
         active_terms = [
             name

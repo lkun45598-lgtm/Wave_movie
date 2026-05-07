@@ -15,6 +15,7 @@ sys.path.insert(0, str(TRAINING_ROOT))
 
 from datasets.OceanNPY import OceanNPYDataset  # noqa: E402
 from trainers.base import (  # noqa: E402
+    BaseTrainer,
     apply_sparse_known_constraint,
     build_hr_bicubic_baseline,
     build_sparse_loss_mask,
@@ -215,6 +216,33 @@ class TemporalOceanNPYTest(unittest.TestCase):
 
         self.assertEqual(constrained.dtype, torch.float32)
         torch.testing.assert_close(constrained[..., 0], x[..., 0], rtol=0.0, atol=0.0)
+
+    def test_inference_can_disable_sparse_known_constraint_during_training(self) -> None:
+        class ConstantModel(torch.nn.Module):
+            def forward(self, x):
+                return torch.full((*x.shape[:-1], 1), -9.0, device=x.device)
+
+        trainer = BaseTrainer.__new__(BaseTrainer)
+        trainer.model = ConstantModel()
+        trainer.model_divisor = 1
+        trainer.residual_learning = False
+        trainer.sparse_known_constraint = True
+        trainer.sparse_known_value_channels = [0]
+        trainer.sparse_known_mask_channel = 2
+
+        x = torch.zeros(1, 2, 3, 3)
+        x[..., 0] = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        x[..., 2] = torch.tensor([[1.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
+        y = torch.zeros(1, 2, 3, 1)
+
+        raw = BaseTrainer.inference(trainer, x, y, apply_known_constraint=False)
+        constrained = BaseTrainer.inference(trainer, x, y, apply_known_constraint=True)
+
+        torch.testing.assert_close(raw, torch.full_like(y, -9.0))
+        expected = torch.tensor(
+            [[[[1.0], [-9.0], [3.0]], [[-9.0], [5.0], [-9.0]]]]
+        )
+        torch.testing.assert_close(constrained, expected)
 
     def test_active_missing_loss_mask_uses_unobserved_active_target_pixels(self) -> None:
         base_mask = torch.ones(1, 2, 3, 1, dtype=torch.bool)

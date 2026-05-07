@@ -47,6 +47,25 @@ class ResidualHighFrequencyTrainingTest(unittest.TestCase):
         self.assertGreater(float(loss_fn(pred, target)), 0.0)
         self.assertAlmostEqual(float(loss_fn(target, target)), 0.0, places=6)
 
+    def test_observed_l1_uses_sparse_observed_mask_independent_of_loss_mask(self) -> None:
+        loss_fn = MaskedCompositeSRLoss({"observed_l1": 2.0})
+        pred = torch.tensor([[[[10.0], [20.0]], [[30.0], [40.0]]]])
+        target = torch.tensor([[[[1.0], [2.0]], [[3.0], [4.0]]]])
+        x = torch.zeros(1, 2, 2, 3)
+        x[..., 2] = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+
+        loss_mask = torch.zeros(1, 2, 2, 1, dtype=torch.bool)
+        loss = loss_fn(
+            pred,
+            target,
+            mask=loss_mask,
+            input_tensor=x,
+            observed_mask_channel=2,
+        )
+
+        expected_observed_l1 = (abs(10.0 - 1.0) + abs(40.0 - 4.0)) / 2.0
+        self.assertAlmostEqual(float(loss), 2.0 * expected_observed_l1, places=6)
+
     def test_build_hr_bicubic_baseline_decodes_lr_and_encodes_hr_space(self) -> None:
         lr_phys = torch.tensor([[[[1.0], [3.0]], [[5.0], [7.0]]]])
         hr_phys = F.interpolate(

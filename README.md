@@ -11,6 +11,7 @@
 - `Ocean-Agent-SDK_core/`：Bohai wavefield SR 训练、推理、数据处理、模型配置和测试代码。
 - `docs/bohai-vz-sparsemask-2x-summary.md`：当前 Vz sparse-mask 2x 实验结论和复现实验命令。
 - `results/bohai_vz_sparsemask2x_compare_residual_active_missing/`：轻量指标汇总、对比曲线和代表性可视化图。
+- `Ocean-Agent-SDK_core/configs/bohai_xyz_2x/bohai_vz_sparsemask_2x_temporal3dunet_masked_observed_gpu0.yaml`：新增的 Vz 稀疏观测重建实验配置，使用 active-missing loss、观测点一致性 loss 和推理阶段观测硬约束。
 
 ## Usage
 
@@ -49,3 +50,4 @@ python save_wave_movie.py \
 - 默认数据集根目录是 `/data/Bohai_Sea/To_ZGT_wave_movie`。
 - 可视化输出默认写到 `visualizations/`，该目录已在 `.gitignore` 中排除，不会推送到仓库。
 - SR 训练数据默认位于 `/data/Bohai_Sea/process_data_sparsemask_2x`，完整预测、checkpoint 和 17GB 级 `testouts/` 不纳入 Git；仓库只保留可复现实验配置和轻量结果摘要。
+- 当前下一步 SR 改进优先验证 `Vz_sparse + Vz_interp + mask_observed` 的稀疏观测任务构造，而不是继续盲目替换模型。
