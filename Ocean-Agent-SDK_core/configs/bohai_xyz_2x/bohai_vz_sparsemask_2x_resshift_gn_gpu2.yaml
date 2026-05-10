@@ -1,0 +1,152 @@
+model:
+  name: Resshift
+  in_channels: 1
+  out_channels: 1
+  resshift_lq_channels: null
+  resshift_diffusion_y_channels:
+    - 7
+  sparse_known_constraint: true
+  sparse_known_constraint_train: false
+  sparse_known_value_channels:
+    - 6
+  sparse_known_mask_channel: 8
+  channel_mults:
+    - 1
+    - 2
+    - 2
+    - 4
+resshift:
+  model:
+    target: models.resshift.models.unet.UNetModelSwin
+    ckpt_path: null
+    params:
+      image_size: 64
+      in_channels: 1
+      lq_channels: 15
+      model_channels: 96
+      out_channels: 1
+      attention_resolutions:
+        - 64
+        - 32
+        - 16
+        - 8
+      dropout: 0
+      channel_mult:
+        - 1
+        - 2
+        - 2
+        - 4
+      num_res_blocks:
+        - 1
+        - 1
+        - 1
+        - 1
+      conv_resample: true
+      dims: 2
+      use_fp16: false
+      num_head_channels: 32
+      use_scale_shift_norm: true
+      resblock_updown: false
+      swin_depth: 1
+      swin_embed_dim: 96
+      window_size: 8
+      mlp_ratio: 4
+      cond_lq: true
+      lq_size: 64
+      cond_mask: false
+  diffusion:
+    target: models.resshift.models.script_util.create_gaussian_diffusion
+    params:
+      sf: 1
+      schedule_name: exponential
+      schedule_kwargs:
+        power: 0.3
+      etas_end: 0.99
+      steps: 15
+      min_noise_level: 0.04
+      kappa: 2.0
+      weighted_mse: false
+      predict_type: xstart
+      timestep_respacing: null
+      scale_factor: 1.0
+      normalize_input: false
+      latent_flag: false
+data:
+  name: OceanNPY
+  data_path: /home/yc/CVPR26/DiffSR/NavierStokes_V1e-5_N1200_T20.mat
+  dataset_root: /data/Bohai_Sea/process_data_sparsemask_2x
+  dyn_vars:
+    - Vz
+  hr_dyn_vars:
+    - Vz
+  lr_dyn_vars:
+    - Vz_sparse
+    - Vz_interp
+    - mask_observed
+  temporal_window: 5
+  temporal_stride: 1
+  temporal_boundary: clamp
+  sample_factor: 1
+  shape:
+    - 200
+    - 150
+  patch_size: 64
+  auto_patch: true
+  model_divisor: 64
+  train_batchsize: 8
+  eval_batchsize: 8
+  train_ratio: 0.8
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  subset: false
+  subset_ratio: 0.1
+  normalize: true
+  normalizer_type: GN
+  num_workers: 4
+train:
+  random_seed: 42
+  cuda: true
+  device: 0
+  epochs: 50
+  patience: -1
+  eval_freq: 10
+  saving_best: true
+  load_ckpt: false
+  ckpt_path: ''
+  saving_ckpt: true
+  ckpt_freq: 10
+  ckpt_max: 3
+  distribute: false
+  distribute_mode: DP
+  device_ids:
+    - 0
+  seed: 42
+  use_amp: true
+  gradient_checkpointing: true
+  nan_guard: true
+optimize:
+  optimizer: AdamW
+  lr: 5.0e-05
+  weight_decay: 0.001
+  grad_clip: 1.0
+  loss_mask_mode: active_missing
+  loss_mask_observed_channel: 8
+  loss_active_threshold: 0.005
+  resshift_aux_loss_weight: 0.05
+  loss:
+    l1: 1.0
+    gradient_l1: 0.1
+    peak_l1: 1.0
+    peak_boost: 4.0
+    peak_quantile: 0.9
+    observed_l1: 0.2
+schedule:
+  scheduler: StepLR
+  step_size: 300
+  gamma: 0.5
+log:
+  verbose: true
+  log: true
+  log_dir: /data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_GN
+  wandb: false
+  wandb_project: OceanSR-Resshift-SparseMask2xObserved-Vz

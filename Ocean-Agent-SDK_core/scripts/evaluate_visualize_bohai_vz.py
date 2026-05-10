@@ -23,6 +23,7 @@ EPS = 1e-12
 COMPONENT = "Vz"
 DEFAULT_DATASET_ROOT = Path("/data/Bohai_Sea/process_data")
 DEFAULT_OUTPUT_ROOT = Path("/data1/user/lz/wave_movie/testouts/vz_single_eval")
+DEFAULT_SOURCE_INFO_PATH = Path("/data/Bohai_Sea/To_ZGT_wave_movie/数据信息.txt")
 DEFAULT_MODELS = (
     (
         "EDSR_PGN_Vz",
@@ -128,6 +129,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-end", type=int, default=100)
     parser.add_argument("--frame-step", type=int, default=10)
     parser.add_argument("--dpi", type=int, default=180)
+    parser.add_argument(
+        "--coordinate-mode",
+        choices=("offset", "absolute"),
+        default="offset",
+        help=(
+            "Coordinate frame for diagnostic figures. offset matches the compact "
+            "comparison plots; absolute matches the original AVS movie x/y km axes."
+        ),
+    )
+    parser.add_argument(
+        "--source-info",
+        type=Path,
+        default=DEFAULT_SOURCE_INFO_PATH,
+        help="Source metadata file containing station longitude/latitude entries.",
+    )
+    parser.add_argument(
+        "--source-utm-zone",
+        type=int,
+        default=60,
+        help="UTM zone used by the AVS x/y coordinates. Bohai wave samples use zone 60.",
+    )
+    parser.add_argument(
+        "--show-source-marker",
+        action="store_true",
+        help="Draw source markers on diagnostic frame figures.",
+    )
     parser.add_argument("--no-figures", action="store_true")
     parser.add_argument("--no-spectral", action="store_true")
     return parser.parse_args()
@@ -520,23 +547,192 @@ def write_per_frame_csv(summary: dict[str, object], path: Path) -> None:
                 )
 
 
-def load_coordinate_extent(dataset_root: Path) -> tuple[list[float], str, str]:
+def load_coordinate_extent(
+    dataset_root: Path,
+    coordinate_mode: str = "offset",
+) -> tuple[list[float], str, str]:
     static_hr = dataset_root / "static_variables" / "hr"
     lon_path = static_hr / "00_lon_rho.npy"
     lat_path = static_hr / "10_lat_rho.npy"
     if lon_path.exists() and lat_path.exists():
         lon = np.asarray(np.load(lon_path), dtype=np.float64)
         lat = np.asarray(np.load(lat_path), dtype=np.float64)
+        if coordinate_mode == "absolute":
+            # Historical AVS/movie figures plot projected mesh coordinates in km.
+            x = lon / 1000.0
+            y = lat / 1000.0
+            return (
+                [
+                    float(np.nanmin(x)),
+                    float(np.nanmax(x)),
+                    float(np.nanmin(y)),
+                    float(np.nanmax(y)),
+                ],
+                "x (km)",
+                "y (km)",
+            )
+        if coordinate_mode != "offset":
+            raise ValueError(f"Unsupported coordinate_mode: {coordinate_mode}")
         x = (lon - np.nanmin(lon)) / 1000.0
         y = (lat - np.nanmin(lat)) / 1000.0
-        extent = [
-            float(np.nanmin(x)),
-            float(np.nanmax(x)),
-            float(np.nanmin(y)),
-            float(np.nanmax(y)),
-        ]
-        return extent, "X offset (km)", "Y offset (km)"
+        return (
+            [
+                float(np.nanmin(x)),
+                float(np.nanmax(x)),
+                float(np.nanmin(y)),
+                float(np.nanmax(y)),
+            ],
+            "X offset (km)",
+            "Y offset (km)",
+        )
     return [0.0, 147.0, 0.0, 199.0], "X index", "Y index"
+
+
+def source_name_from_case(case_name: str) -> str:
+    if case_name.startswith("S1_") or case_name.startswith("S1."):
+        return case_name[3:]
+    return case_name
+
+
+def load_source_locations(info_path: Path) -> dict[str, tuple[float, float]]:
+    if not info_path.exists():
+        return {}
+
+    locations: dict[str, tuple[float, float]] = {}
+    in_location_section = False
+    for raw_line in info_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "震源位置信息" in line:
+            in_location_section = True
+            continue
+        if not in_location_section:
+            continue
+
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            locations[parts[0]] = (float(parts[1]), float(parts[2]))
+        except ValueError:
+            continue
+    return locations
+
+
+def project_lonlat_to_avs_xy_km(
+    longitude: float,
+    latitude: float,
+    utm_zone: int = 60,
+) -> tuple[float, float]:
+    """Project WGS84 lon/lat to the AVS mesh coordinate convention in km."""
+    semi_major_axis = 6378137.0
+    flattening = 1.0 / 298.257223563
+    scale_factor = 0.9996
+    eccentricity = math.sqrt(flattening * (2.0 - flattening))
+    eccentricity_sq = eccentricity * eccentricity
+    second_eccentricity_sq = eccentricity_sq / (1.0 - eccentricity_sq)
+
+    lat_rad = math.radians(latitude)
+    lon_rad = math.radians(longitude)
+    central_lon_rad = math.radians((utm_zone - 1) * 6 - 180 + 3)
+
+    sin_lat = math.sin(lat_rad)
+    cos_lat = math.cos(lat_rad)
+    tan_lat = math.tan(lat_rad)
+    n_value = semi_major_axis / math.sqrt(1.0 - eccentricity_sq * sin_lat * sin_lat)
+    t_value = tan_lat * tan_lat
+    c_value = second_eccentricity_sq * cos_lat * cos_lat
+    a_value = cos_lat * (lon_rad - central_lon_rad)
+
+    meridional_arc = semi_major_axis * (
+        (1.0 - eccentricity_sq / 4.0 - 3.0 * eccentricity_sq**2 / 64.0 - 5.0 * eccentricity_sq**3 / 256.0)
+        * lat_rad
+        - (3.0 * eccentricity_sq / 8.0 + 3.0 * eccentricity_sq**2 / 32.0 + 45.0 * eccentricity_sq**3 / 1024.0)
+        * math.sin(2.0 * lat_rad)
+        + (15.0 * eccentricity_sq**2 / 256.0 + 45.0 * eccentricity_sq**3 / 1024.0)
+        * math.sin(4.0 * lat_rad)
+        - (35.0 * eccentricity_sq**3 / 3072.0) * math.sin(6.0 * lat_rad)
+    )
+
+    easting = (
+        scale_factor
+        * n_value
+        * (
+            a_value
+            + (1.0 - t_value + c_value) * a_value**3 / 6.0
+            + (
+                5.0
+                - 18.0 * t_value
+                + t_value * t_value
+                + 72.0 * c_value
+                - 58.0 * second_eccentricity_sq
+            )
+            * a_value**5
+            / 120.0
+        )
+        + 500000.0
+    )
+    northing = scale_factor * (
+        meridional_arc
+        + n_value
+        * tan_lat
+        * (
+            a_value * a_value / 2.0
+            + (5.0 - t_value + 9.0 * c_value + 4.0 * c_value * c_value)
+            * a_value**4
+            / 24.0
+            + (
+                61.0
+                - 58.0 * t_value
+                + t_value * t_value
+                + 600.0 * c_value
+                - 330.0 * second_eccentricity_sq
+            )
+            * a_value**6
+            / 720.0
+        )
+    )
+    if latitude < 0:
+        northing += 10000000.0
+
+    # The AVS files store southern-hemisphere UTM y without the false northing.
+    avs_y = northing - 10000000.0 if latitude < 0 else northing
+    return float(easting / 1000.0), float(avs_y / 1000.0)
+
+
+def source_marker_for_case(
+    case_name: str,
+    source_locations: dict[str, tuple[float, float]],
+    utm_zone: int,
+    coordinate_mode: str = "absolute",
+    dataset_root: Path | None = None,
+) -> tuple[float, float] | None:
+    source_name = source_name_from_case(case_name)
+    location = source_locations.get(source_name)
+    if location is None:
+        return None
+    longitude, latitude = location
+    source_x, source_y = project_lonlat_to_avs_xy_km(longitude, latitude, utm_zone)
+    if coordinate_mode == "absolute":
+        return source_x, source_y
+    if coordinate_mode != "offset":
+        raise ValueError(f"Unsupported coordinate_mode: {coordinate_mode}")
+    if dataset_root is None:
+        raise ValueError("dataset_root is required when coordinate_mode='offset'")
+
+    static_hr = dataset_root / "static_variables" / "hr"
+    lon_path = static_hr / "00_lon_rho.npy"
+    lat_path = static_hr / "10_lat_rho.npy"
+    if not lon_path.exists() or not lat_path.exists():
+        return source_x, source_y
+
+    lon = np.asarray(np.load(lon_path), dtype=np.float64)
+    lat = np.asarray(np.load(lat_path), dtype=np.float64)
+    return (
+        float(source_x - np.nanmin(lon) / 1000.0),
+        float(source_y - np.nanmin(lat) / 1000.0),
+    )
 
 
 def finite_concat_abs(arrays: list[np.ndarray]) -> np.ndarray:
@@ -572,6 +768,22 @@ def style_axes(ax: plt.Axes, xlabel: str, ylabel: str, show_ylabel: bool) -> Non
     ax.set_aspect("equal", adjustable="box")
 
 
+def draw_source_marker(ax: plt.Axes, source_marker: tuple[float, float] | None) -> None:
+    if source_marker is None:
+        return
+    source_x, source_y = source_marker
+    ax.scatter(
+        [source_x],
+        [source_y],
+        marker="*",
+        s=170,
+        facecolor="#ffe066",
+        edgecolor="black",
+        linewidth=0.9,
+        zorder=10,
+    )
+
+
 def plot_diagnostic_frame(
     model_name: str,
     pred_path: Path,
@@ -585,6 +797,7 @@ def plot_diagnostic_frame(
     xlabel: str,
     ylabel: str,
     dpi: int,
+    source_marker: tuple[float, float] | None = None,
 ) -> Path:
     hr = load_hr(dataset_root, base_name, component)
     lr = load_lr(dataset_root, base_name, lr_component)
@@ -624,8 +837,10 @@ def plot_diagnostic_frame(
             cmap="seismic",
             vmin=-field_lim,
             vmax=field_lim,
+            interpolation="nearest",
         )
         ax.set_title(f"{title}\nmin={data.min():.3g}, max={data.max():.3g}")
+        draw_source_marker(ax, source_marker)
         style_axes(ax, xlabel, ylabel, show_ylabel=(ax is axes[0]))
 
     error_items = [
@@ -641,11 +856,13 @@ def plot_diagnostic_frame(
             cmap="magma",
             vmin=0.0,
             vmax=err_lim,
+            interpolation="nearest",
         )
         ax.set_title(
             f"{title}\n"
             f"p99={metrics['p99_abs_error']:.3g}, max={metrics['max_abs_error']:.3g}"
         )
+        draw_source_marker(ax, source_marker)
         style_axes(ax, xlabel, ylabel, show_ylabel=False)
 
     if field_im is not None:
@@ -999,7 +1216,12 @@ def main() -> None:
         args.frame_end,
         args.frame_step,
     )
-    extent, xlabel, ylabel = load_coordinate_extent(dataset_root)
+    extent, xlabel, ylabel = load_coordinate_extent(dataset_root, args.coordinate_mode)
+    source_locations = (
+        load_source_locations(args.source_info.resolve()) if args.show_source_marker else {}
+    )
+    if args.show_source_marker and not source_locations:
+        print(f"[warn] no source locations loaded from {args.source_info}")
 
     summaries: list[dict[str, object]] = []
     prediction_maps_for_completed: dict[str, dict[str, Path]] = {}
@@ -1063,6 +1285,14 @@ def main() -> None:
                 if base_name not in prediction_map:
                     print(f"[warn] {model_name}: missing visual frame {base_name}")
                     continue
+                case_name, _frame_number = parse_case_frame(base_name)
+                source_marker = source_marker_for_case(
+                    case_name,
+                    source_locations,
+                    int(args.source_utm_zone),
+                    coordinate_mode=args.coordinate_mode,
+                    dataset_root=dataset_root,
+                )
                 out_path = plot_diagnostic_frame(
                     model_name=model_name,
                     pred_path=prediction_map[base_name],
@@ -1076,6 +1306,7 @@ def main() -> None:
                     xlabel=xlabel,
                     ylabel=ylabel,
                     dpi=args.dpi,
+                    source_marker=source_marker,
                 )
                 generated_figures.append(str(out_path))
             print(f"[write] diagnostic figures: {fig_dir}")

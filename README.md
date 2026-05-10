@@ -10,6 +10,7 @@
 - `docs/superpowers/specs/2026-04-25-wave-visualization-layout-design.md`：当前可视化排版设计说明。
 - `Ocean-Agent-SDK_core/`：Bohai wavefield SR 训练、推理、数据处理、模型配置和测试代码。
 - `docs/bohai-vz-sparsemask-2x-summary.md`：当前 Vz sparse-mask 2x 实验结论和复现实验命令。
+- `docs/bohai-vz-experiment-log.md`：逐次记录 Bohai Vz 实验过程、输出路径、指标、结论和下一步改进思路。
 - `results/bohai_vz_sparsemask2x_compare_residual_active_missing/`：轻量指标汇总、对比曲线和代表性可视化图。
 - `Ocean-Agent-SDK_core/configs/bohai_xyz_2x/bohai_vz_sparsemask_2x_temporal3dunet_masked_observed_gpu0.yaml`：新增的 Vz 稀疏观测重建实验配置，使用 active-missing loss、观测点一致性 loss 和推理阶段观测硬约束。
 

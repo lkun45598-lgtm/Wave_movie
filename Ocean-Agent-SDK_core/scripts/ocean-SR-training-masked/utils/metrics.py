@@ -132,6 +132,13 @@ def masked_rmse(pred, target, shape, mask=None, **kwargs):
     return torch.sqrt(masked_mse(pred, target, shape, mask=mask) + 1e-12)
 
 
+def _masked_target_values(target, mask):
+    mask_expanded = mask.expand_as(target)
+    if mask_expanded.dtype != torch.bool:
+        mask_expanded = mask_expanded > 0
+    return target[mask_expanded]
+
+
 @torch.no_grad()
 def masked_psnr(pred, target, shape, mask=None, eps=1e-12, **kwargs):
     """基于 masked_mse 计算 PSNR"""
@@ -139,8 +146,9 @@ def masked_psnr(pred, target, shape, mask=None, eps=1e-12, **kwargs):
 
     if mask is not None:
         # 只在海洋格点上计算 data range
-        mask_expanded = mask.expand_as(target)
-        ocean_values = target[mask_expanded]
+        ocean_values = _masked_target_values(target, mask)
+        if ocean_values.numel() == 0:
+            return target.new_tensor(0.0)
         L = (ocean_values.max() - ocean_values.min()).clamp_min(eps)
     else:
         L = (target.max() - target.min()).clamp_min(eps)
@@ -168,8 +176,9 @@ def masked_ssim(pred, target, shape, mask=None, K1=0.01, K2=0.03, eps=1e-12, **k
     target_masked = target_bchw * mask_bchw.expand_as(target_bchw)
 
     # 只在海洋格点上计算 data range
-    mask_expanded = mask.expand_as(target)
-    ocean_values = target[mask_expanded]
+    ocean_values = _masked_target_values(target, mask)
+    if ocean_values.numel() == 0:
+        return target.new_tensor(0.0)
     L = (ocean_values.max() - ocean_values.min()).clamp_min(eps)
 
     C1 = (K1 * L) ** 2

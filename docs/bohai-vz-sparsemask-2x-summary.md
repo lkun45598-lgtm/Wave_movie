@@ -2,6 +2,12 @@
 
 This note summarizes the current Bohai Sea Vz sparse-mask super-resolution experiment.
 
+For the step-by-step experiment record, output paths, metrics, and next-experiment planning, see:
+
+```text
+docs/bohai-vz-experiment-log.md
+```
+
 ## Dataset
 
 - Raw/processed data root used locally: `/data/Bohai_Sea/process_data_sparsemask_2x`

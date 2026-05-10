@@ -125,6 +125,7 @@ class GaussianDiffusion:
         scale_factor=None,
         normalize_input=True,
         latent_flag=True,
+        diffusion_loss_norm="rel_l2",
     ):
         self.kappa = kappa
         self.model_mean_type = model_mean_type
@@ -133,6 +134,12 @@ class GaussianDiffusion:
         self.normalize_input = normalize_input
         self.latent_flag = latent_flag
         self.sf = sf
+        self.diffusion_loss_norm = str(diffusion_loss_norm or "rel_l2").lower()
+        if self.diffusion_loss_norm not in {"rel_l2", "mse", "l1"}:
+            raise ValueError(
+                "diffusion_loss_norm must be one of rel_l2, mse, l1; "
+                f"got {diffusion_loss_norm!r}"
+            )
 
         # Use float64 for accuracy.
         self.sqrt_etas = sqrt_etas
@@ -559,8 +566,6 @@ class GaussianDiffusion:
         terms = {}
 
         if self.loss_type == LossType.MSE or self.loss_type == LossType.WEIGHTED_MSE:
-            from utils.loss import LpLoss
-            loss_fun = LpLoss()
             model_output = model(self._scale_input(z_t, t), t, **model_kwargs)
             target = {
                 ModelMeanType.START_X: z_start,
@@ -569,7 +574,14 @@ class GaussianDiffusion:
                 ModelMeanType.EPSILON_SCALE: noise*self.kappa*_extract_into_tensor(self.sqrt_etas, t, noise.shape),
             }[self.model_mean_type]
             assert model_output.shape == target.shape == z_start.shape
-            terms["mse"] = loss_fun(model_output, target)
+            if self.diffusion_loss_norm == "rel_l2":
+                from utils.loss import LpLoss
+                loss_fun = LpLoss()
+                terms["mse"] = loss_fun(model_output, target)
+            elif self.diffusion_loss_norm == "mse":
+                terms["mse"] = th.mean((model_output - target) ** 2)
+            else:
+                terms["mse"] = th.mean(th.abs(model_output - target))
             if self.model_mean_type == ModelMeanType.EPSILON_SCALE:
                 terms["mse"] /= (self.kappa**2 * _extract_into_tensor(self.etas, t, t.shape))
             if self.loss_type == LossType.WEIGHTED_MSE:

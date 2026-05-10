@@ -138,7 +138,7 @@ def main():
 
             lr_h, lr_w, lr_c = x.shape[1], x.shape[2], x.shape[3]
             hr_h, hr_w, hr_c = y.shape[1], y.shape[2], y.shape[3]
-            if lr_c != hr_c:
+            if lr_c != hr_c and model_name not in resshift_names:
                 result = {
                     'status': 'error',
                     'error': 'LR/HR channel mismatch',
@@ -242,12 +242,32 @@ def main():
                     model.eval()
 
                     base_diffusion = get_obj_from_str(diffusion_target)(**diffusion_params)
-                    x_up = F.interpolate(x_nchw, size=y_nchw.shape[2:], mode='bicubic', align_corners=False)
+                    def _select_channels_nchw(tensor, channels):
+                        if channels is None:
+                            return tensor
+                        if isinstance(channels, int):
+                            channels = [channels]
+                        return tensor[:, list(channels)]
+
+                    lq_channels = model_cfg.get('resshift_lq_channels', None)
+                    diffusion_y_channels = model_cfg.get(
+                        'resshift_diffusion_y_channels',
+                        None,
+                    )
+                    x_lq = _select_channels_nchw(x_nchw, lq_channels)
+                    x_degraded = _select_channels_nchw(x_nchw, diffusion_y_channels)
+                    x_lq = F.interpolate(x_lq, size=y_nchw.shape[2:], mode='bicubic', align_corners=False)
+                    x_degraded = F.interpolate(
+                        x_degraded,
+                        size=y_nchw.shape[2:],
+                        mode='bicubic',
+                        align_corners=False,
+                    )
                     tt = torch.randint(0, base_diffusion.num_timesteps, size=(y_nchw.shape[0],), device=device)
-                    model_kwargs = {'lq': x_up}
+                    model_kwargs = {'lq': x_lq}
                     with torch.no_grad():
                         losses = base_diffusion.training_losses(
-                            model, y_nchw, x_up, tt,
+                            model, y_nchw, x_degraded, tt,
                             first_stage_model=None,
                             model_kwargs=model_kwargs,
                             noise=None,

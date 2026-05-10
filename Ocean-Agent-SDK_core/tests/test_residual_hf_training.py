@@ -47,6 +47,15 @@ class ResidualHighFrequencyTrainingTest(unittest.TestCase):
         self.assertGreater(float(loss_fn(pred, target)), 0.0)
         self.assertAlmostEqual(float(loss_fn(target, target)), 0.0, places=6)
 
+    def test_masked_composite_loss_has_laplacian_structure_term(self) -> None:
+        loss_fn = MaskedCompositeSRLoss({"laplacian_l1": 1.0})
+        pred = torch.zeros(1, 5, 5, 1)
+        target = torch.zeros(1, 5, 5, 1)
+        target[:, 2, 2, :] = 1.0
+
+        self.assertGreater(float(loss_fn(pred, target)), 0.0)
+        self.assertAlmostEqual(float(loss_fn(target, target)), 0.0, places=6)
+
     def test_observed_l1_uses_sparse_observed_mask_independent_of_loss_mask(self) -> None:
         loss_fn = MaskedCompositeSRLoss({"observed_l1": 2.0})
         pred = torch.tensor([[[[10.0], [20.0]], [[30.0], [40.0]]]])
@@ -65,6 +74,35 @@ class ResidualHighFrequencyTrainingTest(unittest.TestCase):
 
         expected_observed_l1 = (abs(10.0 - 1.0) + abs(40.0 - 4.0)) / 2.0
         self.assertAlmostEqual(float(loss), 2.0 * expected_observed_l1, places=6)
+
+    def test_mixed_sparse_l1_terms_use_active_missing_regions(self) -> None:
+        loss_fn = MaskedCompositeSRLoss(
+            {
+                "active_missing_l1": 1.0,
+                "missing_l1": 2.0,
+                "inactive_missing_l1": 3.0,
+                "active_threshold": 0.05,
+            }
+        )
+        pred = torch.zeros(1, 2, 3, 1)
+        target = torch.tensor([[[[0.1], [0.2], [0.001]], [[0.4], [0.0], [0.6]]]])
+        x = torch.zeros(1, 2, 3, 3)
+        x[..., 2] = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        base_mask = torch.ones(1, 2, 3, 1, dtype=torch.bool)
+
+        loss = loss_fn(
+            pred,
+            target,
+            mask=base_mask,
+            input_tensor=x,
+            observed_mask_channel=2,
+        )
+
+        active_missing_l1 = (0.2 + 0.4 + 0.6) / 3.0
+        missing_l1 = (0.2 + 0.001 + 0.4 + 0.6) / 4.0
+        inactive_missing_l1 = 0.001
+        expected = active_missing_l1 + 2.0 * missing_l1 + 3.0 * inactive_missing_l1
+        self.assertAlmostEqual(float(loss), expected, places=6)
 
     def test_build_hr_bicubic_baseline_decodes_lr_and_encodes_hr_space(self) -> None:
         lr_phys = torch.tensor([[[[1.0], [3.0]], [[5.0], [7.0]]]])

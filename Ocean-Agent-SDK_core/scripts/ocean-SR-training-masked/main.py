@@ -29,6 +29,18 @@ from models import _model_dict
 from datasets import _dataset_dict
 
 
+def resolve_predict_checkpoint_path(args, saving_path):
+    """Resolve model weights for predict mode.
+
+    ``train.ckpt_path`` is for resuming training, so predict mode should not use it
+    by default. Use ``train.predict_ckpt_path`` only when an explicit prediction
+    checkpoint override is needed.
+    """
+    train_args = args.get('train', {})
+    explicit_predict_ckpt = train_args.get('predict_ckpt_path', '')
+    return explicit_predict_ckpt or os.path.join(saving_path, 'best_model.pth')
+
+
 def main():
     trainer = None
     try:
@@ -57,7 +69,7 @@ def main():
             trainer.process()
         elif mode == 'predict':
             # 加载最佳模型
-            ckpt_path = args['train'].get('ckpt_path', '') or os.path.join(saving_path, 'best_model.pth')
+            ckpt_path = resolve_predict_checkpoint_path(args, saving_path)
             trainer.load_model(ckpt_path)
             trainer.predict()
     except Exception as e:

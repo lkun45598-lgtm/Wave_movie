@@ -654,6 +654,7 @@ class UNetModelSwin(nn.Module):
         cond_lq=True,
         cond_mask=False,
         lq_size=256,
+        lq_channels=None,
     ):
         super().__init__()
 
@@ -678,6 +679,7 @@ class UNetModelSwin(nn.Module):
         self.num_head_channels = num_head_channels
         self.cond_lq = cond_lq
         self.cond_mask = cond_mask
+        self.lq_channels = int(lq_channels) if lq_channels is not None else in_channels
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -686,12 +688,13 @@ class UNetModelSwin(nn.Module):
             linear(time_embed_dim, time_embed_dim),
         )
 
+        lq_input_channels = self.lq_channels + (1 if cond_mask else 0)
         if cond_lq and lq_size == image_size:
             self.feature_extractor = nn.Identity()
-            base_chn = in_channels + 1 if cond_mask else in_channels
+            base_chn = lq_input_channels
         else:
             feature_extractor = []
-            base_chn = in_channels + 1 if cond_mask else in_channels
+            feature_chn = lq_input_channels
             base_chn = 16
             for ii in range(int(math.log(lq_size / image_size) / math.log(2))):
                 feature_extractor.append(nn.Conv2d(feature_chn, base_chn, 3, 1, 1))

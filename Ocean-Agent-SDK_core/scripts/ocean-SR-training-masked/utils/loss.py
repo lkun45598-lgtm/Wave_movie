@@ -201,25 +201,32 @@ class MaskedCompositeSRLoss(object):
       - mse: masked mean squared error
       - rel_l2: masked relative L2
       - gradient_l1: masked first-order spatial gradient L1
+      - laplacian_l1: masked second-order spatial structure L1
       - fft_hf_l1: high-frequency Fourier magnitude L1
       - peak_l1: L1 with larger weights on high-amplitude target regions
       - magnitude_l1: vector-magnitude L1 for multi-component velocity fields
       - observed_l1: L1 on sparse observed locations from the input mask
+      - missing_l1: L1 on valid but unobserved sparse locations
+      - active_missing_l1: L1 on unobserved locations where target amplitude is active
+      - inactive_missing_l1: weak L1 on unobserved near-zero locations to suppress artifacts
     """
 
-    _CONTROL_KEYS = {"peak_quantile", "peak_boost", "fft_cutoff"}
+    _CONTROL_KEYS = {"peak_quantile", "peak_boost", "fft_cutoff", "active_threshold"}
 
     def __init__(self, spec: dict[str, float]):
         self.spec = dict(spec)
         self.peak_quantile = float(self.spec.get("peak_quantile", 0.95))
         self.peak_boost = float(self.spec.get("peak_boost", 4.0))
         self.fft_cutoff = float(self.spec.get("fft_cutoff", 0.125))
+        self.active_threshold = float(self.spec.get("active_threshold", 0.0))
         if not 0.0 <= self.peak_quantile <= 1.0:
             raise ValueError("peak_quantile must be in [0, 1]")
         if self.peak_boost < 1.0:
             raise ValueError("peak_boost must be >= 1")
         if self.fft_cutoff < 0.0:
             raise ValueError("fft_cutoff must be >= 0")
+        if self.active_threshold < 0.0:
+            raise ValueError("active_threshold must be >= 0")
 
     def _weight(self, name: str) -> float:
         return float(self.spec.get(name, 0.0))
@@ -239,6 +246,32 @@ class MaskedCompositeSRLoss(object):
         weights = self._mask_like(values, mask)
         denom = weights.sum().clamp(min=1.0)
         return (values * weights).sum() / denom
+
+    def _target_amplitude(self, target):
+        if target.shape[-1] > 1:
+            return torch.linalg.vector_norm(target, ord=2, dim=-1, keepdim=True)
+        return torch.abs(target)
+
+    def _active_mask(self, target):
+        return self._target_amplitude(target) > self.active_threshold
+
+    def _missing_mask(
+        self,
+        target,
+        base_mask=None,
+        input_tensor=None,
+        observed_mask_channel=None,
+    ):
+        observed_mask = self._observed_mask_from_input(
+            input_tensor,
+            target,
+            observed_mask_channel,
+        )
+        missing_mask = ~observed_mask
+        if base_mask is None:
+            return missing_mask
+        base = self._mask_like(target, base_mask) > 0
+        return missing_mask & base
 
     def _rel_l2(self, pred, target, mask=None):
         weights = self._mask_like(target, mask)
@@ -286,11 +319,21 @@ class MaskedCompositeSRLoss(object):
 
         return torch.mean(torch.abs(torch.abs(pred_fft) - torch.abs(target_fft)) * high_mask)
 
+    def _laplacian_l1(self, pred, target, mask=None):
+        pred_cf = pred.permute(0, 3, 1, 2)
+        target_cf = target.permute(0, 3, 1, 2)
+        channels = pred_cf.shape[1]
+        kernel = pred.new_tensor(
+            [[0.0, 1.0, 0.0], [1.0, -4.0, 1.0], [0.0, 1.0, 0.0]]
+        ).reshape(1, 1, 3, 3)
+        kernel = kernel.expand(channels, 1, 3, 3)
+        lap_pred = F.conv2d(pred_cf, kernel, padding=1, groups=channels)
+        lap_target = F.conv2d(target_cf, kernel, padding=1, groups=channels)
+        lap_diff = torch.abs(lap_pred - lap_target).permute(0, 2, 3, 1)
+        return self._masked_mean(lap_diff, mask)
+
     def _peak_l1(self, pred, target, mask=None):
-        if target.shape[-1] > 1:
-            amplitude = torch.linalg.vector_norm(target, ord=2, dim=-1, keepdim=True)
-        else:
-            amplitude = torch.abs(target)
+        amplitude = self._target_amplitude(target)
 
         if mask is not None:
             valid = self._mask_like(amplitude, mask) > 0
@@ -356,6 +399,32 @@ class MaskedCompositeSRLoss(object):
         )
         return self._masked_mean(torch.abs(pred - target), observed_mask)
 
+    def _sparse_region_l1(
+        self,
+        pred,
+        target,
+        *,
+        region,
+        mask=None,
+        input_tensor=None,
+        observed_mask_channel=None,
+    ):
+        missing_mask = self._missing_mask(
+            target,
+            base_mask=mask,
+            input_tensor=input_tensor,
+            observed_mask_channel=observed_mask_channel,
+        )
+        if region == "missing":
+            region_mask = missing_mask
+        elif region == "active_missing":
+            region_mask = missing_mask & self._active_mask(target)
+        elif region == "inactive_missing":
+            region_mask = missing_mask & (~self._active_mask(target))
+        else:
+            raise ValueError(f"Unsupported sparse loss region: {region}")
+        return self._masked_mean(torch.abs(pred - target), region_mask)
+
     def __call__(self, pred, target, mask=None, **kwargs):
         total = pred.new_tensor(0.0)
 
@@ -367,6 +436,8 @@ class MaskedCompositeSRLoss(object):
             total = total + self._weight("rel_l2") * self._rel_l2(pred, target, mask)
         if self._weight("gradient_l1"):
             total = total + self._weight("gradient_l1") * self._gradient_l1(pred, target, mask)
+        if self._weight("laplacian_l1"):
+            total = total + self._weight("laplacian_l1") * self._laplacian_l1(pred, target, mask)
         if self._weight("fft_hf_l1"):
             total = total + self._weight("fft_hf_l1") * self._fft_hf_l1(pred, target)
         if self._weight("peak_l1"):
@@ -377,6 +448,33 @@ class MaskedCompositeSRLoss(object):
             total = total + self._weight("observed_l1") * self._observed_l1(
                 pred,
                 target,
+                input_tensor=kwargs.get("input_tensor", kwargs.get("x")),
+                observed_mask_channel=kwargs.get("observed_mask_channel"),
+            )
+        if self._weight("missing_l1"):
+            total = total + self._weight("missing_l1") * self._sparse_region_l1(
+                pred,
+                target,
+                region="missing",
+                mask=mask,
+                input_tensor=kwargs.get("input_tensor", kwargs.get("x")),
+                observed_mask_channel=kwargs.get("observed_mask_channel"),
+            )
+        if self._weight("active_missing_l1"):
+            total = total + self._weight("active_missing_l1") * self._sparse_region_l1(
+                pred,
+                target,
+                region="active_missing",
+                mask=mask,
+                input_tensor=kwargs.get("input_tensor", kwargs.get("x")),
+                observed_mask_channel=kwargs.get("observed_mask_channel"),
+            )
+        if self._weight("inactive_missing_l1"):
+            total = total + self._weight("inactive_missing_l1") * self._sparse_region_l1(
+                pred,
+                target,
+                region="inactive_missing",
+                mask=mask,
                 input_tensor=kwargs.get("input_tensor", kwargs.get("x")),
                 observed_mask_channel=kwargs.get("observed_mask_channel"),
             )
