@@ -55,9 +55,37 @@ Failure-diagnostic summary:
 
 Conclusion: `ResShift200ep` is still the current main result. `E18 DataConsistency` is a controlled negative result: adding hard data-consistency projection at each ResShift sampling step did not materially improve reconstruction.
 
+## Current Experiment Snapshot
+
+The current methods and figures are collected here:
+
+```text
+docs/results/bohai-vz-sparsemask-2x/current_methods/
+```
+
+This folder is the preferred entry point for review. It includes the later
+experiments after the original ResShift200ep baseline:
+
+| Experiment | Purpose | Representative figures |
+|---|---|---|
+| E13 MixedBoundary | add missing/inactive/boundary constraints | `current_methods/e13_mixed_boundary/` |
+| E14 ActiveHF | add active high-frequency supervision | `current_methods/e14_active_hf/` |
+| E16 TemporalConsistency | add temporal consistency supervision | `current_methods/e16_temporal_consistency_every10/` |
+| E17 SequenceOutput | output/supervise a temporal sequence | `current_methods/e17_sequence_output_every10/` |
+| E18 DataConsistency | add ResShift sampling-step data consistency | `current_methods/e18_data_consistency_every10/` |
+| Sampling ablation | regular vs random vs jittered 25% sampling | `current_methods/sampling_ablation/` |
+| CNN refiner | lightweight CNN post-refiner after ResShift200ep | `current_methods/cnn_refiner_v2_peak/` |
+
+The older ResShift200ep every-10 images are still kept as a historical best
+baseline snapshot:
+
+```text
+docs/results/bohai-vz-sparsemask-2x/resshift200ep_every10/
+```
+
 ## Included Figures
 
-Representative ResShift200ep every-10-frame visualizations for case `S1_TTTZ`:
+Historical ResShift200ep every-10-frame visualizations for case `S1_TTTZ`:
 
 ```text
 docs/results/bohai-vz-sparsemask-2x/resshift200ep_every10/
@@ -83,13 +111,13 @@ Key diagnostic figures:
 
 ![Spectral retention boxplot](diagnostics/fig3_spectral_retention_boxplot.png)
 
-Example ResShift200ep frames:
+Example current E18 frames:
 
-![S1_TTTZ_000010](resshift200ep_every10/S1_TTTZ_000010.png)
+![E18 S1_TTTZ_000010](current_methods/e18_data_consistency_every10/S1_TTTZ_000010.png)
 
-![S1_TTTZ_000050](resshift200ep_every10/S1_TTTZ_000050.png)
+![E18 S1_TTTZ_000050](current_methods/e18_data_consistency_every10/S1_TTTZ_000050.png)
 
-![S1_TTTZ_000100](resshift200ep_every10/S1_TTTZ_000100.png)
+![E18 S1_TTTZ_000100](current_methods/e18_data_consistency_every10/S1_TTTZ_000100.png)
 
 ## Experiment Interpretation
 
@@ -103,4 +131,3 @@ The main negative findings are:
 - Peak-preserving post-refinement can raise peak ratio, but can also worsen RMSE and create incorrect structure if the constraint is too strong.
 
 The next useful direction is not to keep tuning data-consistency strength. A more promising direction is to add physical/propagation context, such as source/time conditioning, larger spatial context, or active-wavefront-specific structural supervision.
-
