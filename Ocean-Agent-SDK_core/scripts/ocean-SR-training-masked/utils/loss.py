@@ -201,7 +201,10 @@ class MaskedCompositeSRLoss(object):
       - mse: masked mean squared error
       - rel_l2: masked relative L2
       - gradient_l1: masked first-order spatial gradient L1
+      - active_missing_gradient_l1: first-order gradient L1 on active missing neighbors
+      - boundary_gradient_l1: first-order gradient L1 across observed/missing edges
       - laplacian_l1: masked second-order spatial structure L1
+      - active_missing_laplacian_l1: second-order structure L1 on active missing points
       - fft_hf_l1: high-frequency Fourier magnitude L1
       - peak_l1: L1 with larger weights on high-amplitude target regions
       - magnitude_l1: vector-magnitude L1 for multi-component velocity fields
@@ -273,6 +276,29 @@ class MaskedCompositeSRLoss(object):
         base = self._mask_like(target, base_mask) > 0
         return missing_mask & base
 
+    def _sparse_region_mask(
+        self,
+        target,
+        *,
+        region,
+        base_mask=None,
+        input_tensor=None,
+        observed_mask_channel=None,
+    ):
+        missing_mask = self._missing_mask(
+            target,
+            base_mask=base_mask,
+            input_tensor=input_tensor,
+            observed_mask_channel=observed_mask_channel,
+        )
+        if region == "missing":
+            return missing_mask
+        if region == "active_missing":
+            return missing_mask & self._active_mask(target)
+        if region == "inactive_missing":
+            return missing_mask & (~self._active_mask(target))
+        raise ValueError(f"Unsupported sparse loss region: {region}")
+
     def _rel_l2(self, pred, target, mask=None):
         weights = self._mask_like(target, mask)
         diff = (pred - target) * weights
@@ -301,6 +327,37 @@ class MaskedCompositeSRLoss(object):
         return 0.5 * (
             self._masked_mean(torch.abs(dy_pred - dy_target), dy_mask)
             + self._masked_mean(torch.abs(dx_pred - dx_target), dx_mask)
+        )
+
+    def _boundary_gradient_l1(
+        self,
+        pred,
+        target,
+        mask=None,
+        input_tensor=None,
+        observed_mask_channel=None,
+    ):
+        observed = self._observed_mask_from_input(
+            input_tensor,
+            target,
+            observed_mask_channel,
+        )
+        base = self._mask_like(target, mask) > 0
+        observed = observed.expand_as(base)
+
+        dy_pred = pred[:, 1:, :, :] - pred[:, :-1, :, :]
+        dy_target = target[:, 1:, :, :] - target[:, :-1, :, :]
+        dx_pred = pred[:, :, 1:, :] - pred[:, :, :-1, :]
+        dx_target = target[:, :, 1:, :] - target[:, :, :-1, :]
+
+        dy_valid = base[:, 1:, :, :] & base[:, :-1, :, :]
+        dx_valid = base[:, :, 1:, :] & base[:, :, :-1, :]
+        dy_boundary = dy_valid & (observed[:, 1:, :, :] ^ observed[:, :-1, :, :])
+        dx_boundary = dx_valid & (observed[:, :, 1:, :] ^ observed[:, :, :-1, :])
+
+        return 0.5 * (
+            self._masked_mean(torch.abs(dy_pred - dy_target), dy_boundary)
+            + self._masked_mean(torch.abs(dx_pred - dx_target), dx_boundary)
         )
 
     def _fft_hf_l1(self, pred, target):
@@ -409,21 +466,52 @@ class MaskedCompositeSRLoss(object):
         input_tensor=None,
         observed_mask_channel=None,
     ):
-        missing_mask = self._missing_mask(
+        region_mask = self._sparse_region_mask(
             target,
+            region=region,
             base_mask=mask,
             input_tensor=input_tensor,
             observed_mask_channel=observed_mask_channel,
         )
-        if region == "missing":
-            region_mask = missing_mask
-        elif region == "active_missing":
-            region_mask = missing_mask & self._active_mask(target)
-        elif region == "inactive_missing":
-            region_mask = missing_mask & (~self._active_mask(target))
-        else:
-            raise ValueError(f"Unsupported sparse loss region: {region}")
         return self._masked_mean(torch.abs(pred - target), region_mask)
+
+    def _sparse_region_gradient_l1(
+        self,
+        pred,
+        target,
+        *,
+        region,
+        mask=None,
+        input_tensor=None,
+        observed_mask_channel=None,
+    ):
+        region_mask = self._sparse_region_mask(
+            target,
+            region=region,
+            base_mask=mask,
+            input_tensor=input_tensor,
+            observed_mask_channel=observed_mask_channel,
+        )
+        return self._gradient_l1(pred, target, region_mask)
+
+    def _sparse_region_laplacian_l1(
+        self,
+        pred,
+        target,
+        *,
+        region,
+        mask=None,
+        input_tensor=None,
+        observed_mask_channel=None,
+    ):
+        region_mask = self._sparse_region_mask(
+            target,
+            region=region,
+            base_mask=mask,
+            input_tensor=input_tensor,
+            observed_mask_channel=observed_mask_channel,
+        )
+        return self._laplacian_l1(pred, target, region_mask)
 
     def __call__(self, pred, target, mask=None, **kwargs):
         total = pred.new_tensor(0.0)
@@ -436,8 +524,34 @@ class MaskedCompositeSRLoss(object):
             total = total + self._weight("rel_l2") * self._rel_l2(pred, target, mask)
         if self._weight("gradient_l1"):
             total = total + self._weight("gradient_l1") * self._gradient_l1(pred, target, mask)
+        if self._weight("active_missing_gradient_l1"):
+            total = total + self._weight("active_missing_gradient_l1") * self._sparse_region_gradient_l1(
+                pred,
+                target,
+                region="active_missing",
+                mask=mask,
+                input_tensor=kwargs.get("input_tensor", kwargs.get("x")),
+                observed_mask_channel=kwargs.get("observed_mask_channel"),
+            )
+        if self._weight("boundary_gradient_l1"):
+            total = total + self._weight("boundary_gradient_l1") * self._boundary_gradient_l1(
+                pred,
+                target,
+                mask=mask,
+                input_tensor=kwargs.get("input_tensor", kwargs.get("x")),
+                observed_mask_channel=kwargs.get("observed_mask_channel"),
+            )
         if self._weight("laplacian_l1"):
             total = total + self._weight("laplacian_l1") * self._laplacian_l1(pred, target, mask)
+        if self._weight("active_missing_laplacian_l1"):
+            total = total + self._weight("active_missing_laplacian_l1") * self._sparse_region_laplacian_l1(
+                pred,
+                target,
+                region="active_missing",
+                mask=mask,
+                input_tensor=kwargs.get("input_tensor", kwargs.get("x")),
+                observed_mask_channel=kwargs.get("observed_mask_channel"),
+            )
         if self._weight("fft_hf_l1"):
             total = total + self._weight("fft_hf_l1") * self._fft_hf_l1(pred, target)
         if self._weight("peak_l1"):

@@ -1,0 +1,27 @@
+{
+  "combined_metrics": "/data1/user/lz/wave_movie/testouts/Resshift_DataConsistency_E18_eval/combined_metrics_vz.json",
+  "generated_figures_count": 23,
+  "generated_figures_sample": [
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_DataConsistency_E18/figs_eval_every10_vz_maxerr/S1_TTTZ_000010.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_DataConsistency_E18/figs_eval_every10_vz_maxerr/S1_TTTZ_000020.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_DataConsistency_E18/figs_eval_every10_vz_maxerr/S1_TTTZ_000030.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_DataConsistency_E18/figs_eval_every10_vz_maxerr/S1_TTTZ_000040.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_DataConsistency_E18/figs_eval_every10_vz_maxerr/S1_TTTZ_000050.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_DataConsistency_E18/figs_eval_every10_vz_maxerr/S1_TTTZ_000060.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_DataConsistency_E18/figs_eval_every10_vz_maxerr/S1_TTTZ_000070.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_DataConsistency_E18/figs_eval_every10_vz_maxerr/S1_TTTZ_000080.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_DataConsistency_E18/figs_eval_every10_vz_maxerr/S1_TTTZ_000090.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_DataConsistency_E18/figs_eval_every10_vz_maxerr/S1_TTTZ_000100.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_MSEAux_200ep/figs_eval_every10_vz_maxerr/S1_TTTZ_000010.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_MSEAux_200ep/figs_eval_every10_vz_maxerr/S1_TTTZ_000020.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_MSEAux_200ep/figs_eval_every10_vz_maxerr/S1_TTTZ_000030.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_MSEAux_200ep/figs_eval_every10_vz_maxerr/S1_TTTZ_000040.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_MSEAux_200ep/figs_eval_every10_vz_maxerr/S1_TTTZ_000050.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_MSEAux_200ep/figs_eval_every10_vz_maxerr/S1_TTTZ_000060.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_MSEAux_200ep/figs_eval_every10_vz_maxerr/S1_TTTZ_000070.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_MSEAux_200ep/figs_eval_every10_vz_maxerr/S1_TTTZ_000080.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_MSEAux_200ep/figs_eval_every10_vz_maxerr/S1_TTTZ_000090.png",
+    "/data1/user/lz/wave_movie/testouts/Resshift_SparseMask2xObserved_Vz_MSEAux_200ep/figs_eval_every10_vz_maxerr/S1_TTTZ_000100.png"
+  ],
+  "skipped_models": []
+}

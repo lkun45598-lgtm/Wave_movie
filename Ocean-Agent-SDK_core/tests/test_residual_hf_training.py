@@ -104,6 +104,106 @@ class ResidualHighFrequencyTrainingTest(unittest.TestCase):
         expected = active_missing_l1 + 2.0 * missing_l1 + 3.0 * inactive_missing_l1
         self.assertAlmostEqual(float(loss), expected, places=6)
 
+    def test_boundary_gradient_l1_uses_observed_missing_edges(self) -> None:
+        loss_fn = MaskedCompositeSRLoss({"boundary_gradient_l1": 2.0})
+        pred = torch.zeros(1, 2, 2, 1)
+        target = torch.tensor([[[[1.0], [3.0]], [[5.0], [7.0]]]])
+        x = torch.zeros(1, 2, 2, 3)
+        x[..., 2] = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        base_mask = torch.ones(1, 2, 2, 1, dtype=torch.bool)
+
+        loss = loss_fn(
+            pred,
+            target,
+            mask=base_mask,
+            input_tensor=x,
+            observed_mask_channel=2,
+        )
+
+        dy_boundary_l1 = (4.0 + 4.0) / 2.0
+        dx_boundary_l1 = (2.0 + 2.0) / 2.0
+        expected_boundary_gradient = 0.5 * (dy_boundary_l1 + dx_boundary_l1)
+        self.assertAlmostEqual(float(loss), 2.0 * expected_boundary_gradient, places=6)
+
+    def test_active_missing_gradient_l1_only_uses_active_unobserved_neighbors(self) -> None:
+        loss_fn = MaskedCompositeSRLoss(
+            {
+                "active_missing_gradient_l1": 2.0,
+                "active_threshold": 0.05,
+            }
+        )
+        pred = torch.zeros(1, 2, 3, 1)
+        target = torch.tensor([[[[0.0], [1.0], [3.0]], [[0.0], [5.0], [0.001]]]])
+        x = torch.zeros(1, 2, 3, 3)
+        x[..., 2] = torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        base_mask = torch.ones(1, 2, 3, 1, dtype=torch.bool)
+
+        loss = loss_fn(
+            pred,
+            target,
+            mask=base_mask,
+            input_tensor=x,
+            observed_mask_channel=2,
+        )
+
+        dy_active_missing_l1 = abs(5.0 - 1.0)
+        dx_active_missing_l1 = abs(3.0 - 1.0)
+        expected_gradient = 0.5 * (dy_active_missing_l1 + dx_active_missing_l1)
+        self.assertAlmostEqual(float(loss), 2.0 * expected_gradient, places=6)
+
+    def test_active_missing_laplacian_l1_only_uses_active_unobserved_pixels(self) -> None:
+        loss_fn = MaskedCompositeSRLoss(
+            {
+                "active_missing_laplacian_l1": 0.5,
+                "active_threshold": 0.05,
+            }
+        )
+        pred = torch.zeros(1, 3, 3, 1)
+        target = torch.zeros(1, 3, 3, 1)
+        target[:, 1, 1, :] = 1.0
+        x = torch.zeros(1, 3, 3, 3)
+        x[..., 2] = 1.0
+        x[:, 1, 1, 2] = 0.0
+        base_mask = torch.ones(1, 3, 3, 1, dtype=torch.bool)
+
+        loss = loss_fn(
+            pred,
+            target,
+            mask=base_mask,
+            input_tensor=x,
+            observed_mask_channel=2,
+        )
+
+        self.assertAlmostEqual(float(loss), 0.5 * 4.0, places=6)
+
+    def test_temporal_consistency_loss_matches_neighbor_differences(self) -> None:
+        trainer = BaseTrainer.__new__(BaseTrainer)
+        trainer.loss_mask_mode = "active_missing"
+        trainer.loss_mask_observed_channel = 2
+        trainer.loss_active_threshold = 0.05
+
+        x_seq = torch.zeros(1, 3, 1, 2, 3)
+        x_seq[..., 2] = torch.tensor([[[[1.0, 0.0]], [[1.0, 0.0]], [[1.0, 0.0]]]])
+        target_seq = torch.zeros(1, 3, 1, 2, 1)
+        target_seq[:, 0, 0, :, 0] = torch.tensor([0.0, 1.0])
+        target_seq[:, 1, 0, :, 0] = torch.tensor([0.0, 3.0])
+        target_seq[:, 2, 0, :, 0] = torch.tensor([0.0, 6.0])
+        pred_seq = torch.zeros_like(target_seq)
+        pred_seq[:, 0, 0, :, 0] = torch.tensor([0.0, 1.0])
+        pred_seq[:, 1, 0, :, 0] = torch.tensor([0.0, 2.0])
+        pred_seq[:, 2, 0, :, 0] = torch.tensor([0.0, 4.0])
+
+        loss = BaseTrainer._temporal_consistency_loss(
+            trainer,
+            pred_seq,
+            target_seq,
+            x_seq,
+            base_mask=torch.ones(1, 1, 2, 1, dtype=torch.bool),
+        )
+
+        expected = (abs((2.0 - 1.0) - (3.0 - 1.0)) + abs((4.0 - 2.0) - (6.0 - 3.0))) / 2.0
+        self.assertAlmostEqual(float(loss), expected, places=6)
+
     def test_build_hr_bicubic_baseline_decodes_lr_and_encodes_hr_space(self) -> None:
         lr_phys = torch.tensor([[[[1.0], [3.0]], [[5.0], [7.0]]]])
         hr_phys = F.interpolate(

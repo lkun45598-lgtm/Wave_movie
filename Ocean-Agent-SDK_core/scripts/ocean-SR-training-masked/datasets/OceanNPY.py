@@ -115,16 +115,27 @@ class OceanNPYDataset:
         temporal_window = int(data_args.get('temporal_window', 1) or 1)
         temporal_stride = int(data_args.get('temporal_stride', 1) or 1)
         temporal_boundary = data_args.get('temporal_boundary', 'clamp')
+        temporal_supervision_window = int(data_args.get('temporal_supervision_window', 1) or 1)
+        temporal_supervision_stride = int(data_args.get('temporal_supervision_stride', 1) or 1)
+        train_temporal_indices = valid_temporal_indices = test_temporal_indices = None
         if temporal_window > 1:
-            train_hr, train_lr, train_filenames = self._build_temporal_split(
-                train_hr, train_lr, train_filenames, temporal_window, temporal_stride, temporal_boundary)
-            valid_hr, valid_lr, valid_filenames = self._build_temporal_split(
-                valid_hr, valid_lr, valid_filenames, temporal_window, temporal_stride, temporal_boundary)
-            test_hr, test_lr, test_filenames = self._build_temporal_split(
-                test_hr, test_lr, test_filenames, temporal_window, temporal_stride, temporal_boundary)
+            train_hr, train_lr, train_filenames, train_temporal_indices = self._build_temporal_split(
+                train_hr, train_lr, train_filenames, temporal_window, temporal_stride,
+                temporal_boundary, temporal_supervision_window, temporal_supervision_stride)
+            valid_hr, valid_lr, valid_filenames, valid_temporal_indices = self._build_temporal_split(
+                valid_hr, valid_lr, valid_filenames, temporal_window, temporal_stride,
+                temporal_boundary, temporal_supervision_window, temporal_supervision_stride)
+            test_hr, test_lr, test_filenames, test_temporal_indices = self._build_temporal_split(
+                test_hr, test_lr, test_filenames, temporal_window, temporal_stride,
+                temporal_boundary, temporal_supervision_window, temporal_supervision_stride)
             print(f'[OceanNPY] Temporal LR input: window={temporal_window}, '
                   f'stride={temporal_stride}, boundary={temporal_boundary}, '
                   f'LR channels={train_lr.shape[-1]}')
+            if temporal_supervision_window > 1:
+                print(f'[OceanNPY] Temporal supervision: window={temporal_supervision_window}, '
+                      f'stride={temporal_supervision_stride}, boundary={temporal_boundary}')
+        elif temporal_supervision_window > 1:
+            raise ValueError("temporal_supervision_window requires temporal_window > 1")
 
         # 从 NaN 与 static_variables/*/*mask*.npy 合并生成有效区域 mask。
         # mask: True = 有效物理区域，False = 陆地/网格外/零波速等无效区域。
@@ -244,17 +255,20 @@ class OceanNPYDataset:
             train_lr, train_hr, mode='train',
             patch_size=patch_size, scale=scale, mask_hr=mask_hr_spatial,
             lon_hr=lon_hr, lat_hr=lat_hr, lon_lr=lon_lr, lat_lr=lat_lr,
-            filenames=train_filenames, dyn_vars=hr_dyn_vars)
+            filenames=train_filenames, dyn_vars=hr_dyn_vars,
+            temporal_supervision_indices=train_temporal_indices)
         self.valid_dataset = OceanNPYDatasetBase(
             valid_lr, valid_hr, mode='valid',
             patch_size=patch_size, scale=scale, mask_hr=mask_hr_spatial,
             lon_hr=lon_hr, lat_hr=lat_hr, lon_lr=lon_lr, lat_lr=lat_lr,
-            filenames=valid_filenames, dyn_vars=hr_dyn_vars)
+            filenames=valid_filenames, dyn_vars=hr_dyn_vars,
+            temporal_supervision_indices=valid_temporal_indices)
         self.test_dataset = OceanNPYDatasetBase(
             test_lr, test_hr, mode='test',
             patch_size=patch_size, scale=scale, mask_hr=mask_hr_spatial,
             lon_hr=lon_hr, lat_hr=lat_hr, lon_lr=lon_lr, lat_lr=lat_lr,
-            filenames=test_filenames, dyn_vars=hr_dyn_vars)
+            filenames=test_filenames, dyn_vars=hr_dyn_vars,
+            temporal_supervision_indices=test_temporal_indices)
 
     def _load_var_stack(self, dataset_root, split, resolution, dyn_vars):
         arrays = []
@@ -325,7 +339,16 @@ class OceanNPYDataset:
         return match.group('case'), int(match.group('frame'))
 
     @staticmethod
-    def _build_temporal_split(hr_data, lr_data, filenames, temporal_window, temporal_stride, boundary):
+    def _build_temporal_split(
+        hr_data,
+        lr_data,
+        filenames,
+        temporal_window,
+        temporal_stride,
+        boundary,
+        supervision_window=1,
+        supervision_stride=1,
+    ):
         """Concatenate neighboring LR frames along channels and keep center HR targets."""
         if temporal_window % 2 == 0:
             raise ValueError(f"temporal_window must be odd, got {temporal_window}")
@@ -333,6 +356,12 @@ class OceanNPYDataset:
             raise ValueError(f"temporal_window must be >= 1, got {temporal_window}")
         if temporal_stride < 1:
             raise ValueError(f"temporal_stride must be >= 1, got {temporal_stride}")
+        if supervision_window % 2 == 0:
+            raise ValueError(f"temporal_supervision_window must be odd, got {supervision_window}")
+        if supervision_window < 1:
+            raise ValueError(f"temporal_supervision_window must be >= 1, got {supervision_window}")
+        if supervision_stride < 1:
+            raise ValueError(f"temporal_supervision_stride must be >= 1, got {supervision_stride}")
         if boundary != 'clamp':
             raise ValueError(f"Only temporal_boundary='clamp' is supported, got {boundary!r}")
 
@@ -345,11 +374,14 @@ class OceanNPYDataset:
         temporal_lr = []
         center_hr = []
         center_filenames = []
+        supervision_indices = [] if supervision_window > 1 else None
+        supervision_radius = supervision_window // 2
 
         for items in groups.values():
             items = sorted(items, key=lambda item: item[0])
             indices = [index for _, index in items]
             last_position = len(indices) - 1
+            local_output_indices = []
 
             for position, center_index in enumerate(indices):
                 frame_indices = []
@@ -358,11 +390,29 @@ class OceanNPYDataset:
                     neighbor_position = max(0, min(last_position, neighbor_position))
                     frame_indices.append(indices[neighbor_position])
 
+                local_output_indices.append(len(temporal_lr))
                 temporal_lr.append(torch.cat([lr_data[i] for i in frame_indices], dim=-1))
                 center_hr.append(hr_data[center_index])
                 center_filenames.append(filenames[center_index])
 
-        return torch.stack(center_hr, dim=0), torch.stack(temporal_lr, dim=0), center_filenames
+            if supervision_indices is not None:
+                for position in range(len(local_output_indices)):
+                    sample_indices = []
+                    for offset in range(-supervision_radius, supervision_radius + 1):
+                        neighbor_position = position + offset * supervision_stride
+                        neighbor_position = max(0, min(last_position, neighbor_position))
+                        sample_indices.append(local_output_indices[neighbor_position])
+                    supervision_indices.append(sample_indices)
+
+        if supervision_indices is not None:
+            supervision_indices = torch.tensor(supervision_indices, dtype=torch.long)
+
+        return (
+            torch.stack(center_hr, dim=0),
+            torch.stack(temporal_lr, dim=0),
+            center_filenames,
+            supervision_indices,
+        )
 
     @staticmethod
     def _find_lon_lat(npy_files):
@@ -494,7 +544,7 @@ class OceanNPYDatasetBase(Dataset):
 
     def __init__(self, x, y, mode='train', patch_size=None, scale=1, mask_hr=None,
                  lon_hr=None, lat_hr=None, lon_lr=None, lat_lr=None,
-                 filenames=None, dyn_vars=None, **kwargs):
+                 filenames=None, dyn_vars=None, temporal_supervision_indices=None, **kwargs):
         self.mode = mode
         self.x = x
         self.y = y
@@ -507,6 +557,7 @@ class OceanNPYDatasetBase(Dataset):
         self.lat_lr = lat_lr    # np.ndarray 1D/2D or None
         self.filenames = filenames  # list[str] or None
         self.dyn_vars = dyn_vars    # list[str] or None
+        self.temporal_supervision_indices = temporal_supervision_indices
         self.mode = mode
         # 非训练模式 + 有 patch_size：预计算非重叠网格位置
         if patch_size is not None and mode != 'train':
@@ -544,23 +595,41 @@ class OceanNPYDatasetBase(Dataset):
 
             x = self.x[sample_idx]
             y = self.y[sample_idx]
+            x_seq = y_seq = None
+            if self.temporal_supervision_indices is not None:
+                seq_indices = self.temporal_supervision_indices[sample_idx]
+                x_seq = self.x[seq_indices]
+                y_seq = self.y[seq_indices]
             ps = self.patch_size
 
             y = y[top:top+ps, left:left+ps, :]
+            if y_seq is not None:
+                y_seq = y_seq[:, top:top+ps, left:left+ps, :]
 
             lr_ps = ps // self.scale
             lr_top = top // self.scale
             lr_left = left // self.scale
             x = x[lr_top:lr_top+lr_ps, lr_left:lr_left+lr_ps, :]
+            if x_seq is not None:
+                x_seq = x_seq[:, lr_top:lr_top+lr_ps, lr_left:lr_left+lr_ps, :]
 
             if self.mask_hr is not None:
                 mask_hr_patch = self.mask_hr[0, top:top+ps, left:left+ps, :]
+                if x_seq is not None:
+                    return x, y, mask_hr_patch, x_seq, y_seq
                 return x, y, mask_hr_patch
 
+            if x_seq is not None:
+                return x, y, x_seq, y_seq
             return x, y
 
         x = self.x[idx]  # [h, w, C]
         y = self.y[idx]  # [H, W, C]
+        x_seq = y_seq = None
+        if self.temporal_supervision_indices is not None:
+            seq_indices = self.temporal_supervision_indices[idx]
+            x_seq = self.x[seq_indices]
+            y_seq = self.y[seq_indices]
 
         if self.patch_size is not None and self.mode == 'train':
             H, W, C = y.shape
@@ -578,18 +647,26 @@ class OceanNPYDatasetBase(Dataset):
                 top = torch.randint(0, H - ps + 1, (1,)).item()
                 left = torch.randint(0, W - ps + 1, (1,)).item()
             y = y[top:top+ps, left:left+ps, :]
+            if y_seq is not None:
+                y_seq = y_seq[:, top:top+ps, left:left+ps, :]
 
             # 推导对应的 LR patch 坐标
             lr_ps = ps // self.scale
             lr_top = top // self.scale
             lr_left = left // self.scale
             x = x[lr_top:lr_top+lr_ps, lr_left:lr_left+lr_ps, :]
+            if x_seq is not None:
+                x_seq = x_seq[:, lr_top:lr_top+lr_ps, lr_left:lr_left+lr_ps, :]
 
             # 裁剪对应的 mask patch
             if self.mask_hr is not None:
                 mask_hr_patch = self.mask_hr[0, top:top+ps, left:left+ps, :]  # [ps, ps, 1]
+                if x_seq is not None:
+                    return x, y, mask_hr_patch, x_seq, y_seq
                 return x, y, mask_hr_patch
 
+        if x_seq is not None:
+            return x, y, x_seq, y_seq
         return x, y
 
     def get_meta(self, idx):

@@ -35,6 +35,32 @@ from .base import BaseTrainer, apply_sparse_known_constraint
 
 from utils.metrics import get_obj_from_str
 
+
+def apply_sparse_known_constraint_nchw(
+    pred,
+    x,
+    observed_value_channels,
+    mask_channel,
+    strength=1.0,
+):
+    """Apply sparse observation consistency to a channel-first prediction."""
+    strength = float(strength)
+    if not 0.0 <= strength <= 1.0:
+        raise ValueError(f"data consistency strength must be in [0, 1], got {strength}")
+
+    pred_nhwc = pred.permute(0, 2, 3, 1)
+    hard_nhwc = apply_sparse_known_constraint(
+        pred_nhwc,
+        x,
+        observed_value_channels=observed_value_channels,
+        mask_channel=mask_channel,
+    )
+    if strength < 1.0:
+        pred_nhwc = pred_nhwc.to(dtype=hard_nhwc.dtype, device=hard_nhwc.device)
+        hard_nhwc = pred_nhwc * (1.0 - strength) + hard_nhwc * strength
+    return hard_nhwc.permute(0, 3, 1, 2).contiguous()
+
+
 class ResshiftTrainer(BaseTrainer):
     def __init__(self, args):
         super().__init__(args)
@@ -56,6 +82,31 @@ class ResshiftTrainer(BaseTrainer):
         self.resshift_aux_loss_weight = float(
             self.optim_args.get('resshift_aux_loss_weight', 0.0)
         )
+        self.resshift_data_consistency = bool(
+            self.model_args.get(
+                'resshift_data_consistency',
+                self.optim_args.get('resshift_data_consistency', False),
+            )
+        )
+        self.resshift_data_consistency_strength = float(
+            self.model_args.get(
+                'resshift_data_consistency_strength',
+                self.optim_args.get('resshift_data_consistency_strength', 1.0),
+            )
+        )
+        if not 0.0 <= self.resshift_data_consistency_strength <= 1.0:
+            raise ValueError(
+                "resshift_data_consistency_strength must be in [0, 1], got "
+                f"{self.resshift_data_consistency_strength}"
+            )
+        if self.resshift_data_consistency and (
+            self.sparse_known_value_channels is None
+            or self.sparse_known_mask_channel is None
+        ):
+            raise ValueError(
+                "resshift_data_consistency requires sparse_known_value_channels "
+                "and sparse_known_mask_channel"
+            )
         return model
 
     @staticmethod
@@ -81,6 +132,21 @@ class ResshiftTrainer(BaseTrainer):
                 align_corners=False,
             )
         return lq, degraded
+
+    def _build_data_consistency_denoised_fn(self, x_input):
+        if not self.resshift_data_consistency:
+            return None
+
+        def _denoised_fn(pred_xstart):
+            return apply_sparse_known_constraint_nchw(
+                pred_xstart,
+                x_input,
+                observed_value_channels=self.sparse_known_value_channels,
+                mask_channel=self.sparse_known_mask_channel,
+                strength=self.resshift_data_consistency_strength,
+            )
+
+        return _denoised_fn
 
     def train(self, epoch, **kwargs):
         loss_record = LossRecord(["train_loss", "diffusion_loss", "aux_loss"])
@@ -199,6 +265,16 @@ class ResshiftTrainer(BaseTrainer):
 
         model_kwargs = {'lq': lq}
         model = self._unwrap()
+        denoised_fn = kwargs.get('denoised_fn')
+        data_consistency_fn = self._build_data_consistency_denoised_fn(x_input)
+        if data_consistency_fn is not None:
+            if denoised_fn is None:
+                denoised_fn = data_consistency_fn
+            else:
+                previous_denoised_fn = denoised_fn
+
+                def denoised_fn(pred_xstart):
+                    return data_consistency_fn(previous_denoised_fn(pred_xstart))
 
         # NOTE: ResShift p_sample() 的后验系数是按连续步 t→t-1 推导的，
         # 不支持跳步采样。若要加速推理，应在 diffusion 创建时设置
@@ -211,6 +287,7 @@ class ResshiftTrainer(BaseTrainer):
                         noise=None,
                         clip_denoised=None,
                         model_kwargs=model_kwargs,
+                        denoised_fn=denoised_fn,
                         device=degraded.device,
                         progress=True,
                         )

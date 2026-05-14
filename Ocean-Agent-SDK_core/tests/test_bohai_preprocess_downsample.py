@@ -58,6 +58,72 @@ class BohaiPreprocessDownsampleTest(unittest.TestCase):
         self.assertEqual(float(sparse[1, 1]), 0.0)
         np.testing.assert_allclose(interp, field, rtol=1e-6, atol=1e-6)
 
+    def test_random_sparse_mask_is_reproducible_with_target_observation_count(self) -> None:
+        mask_a = preprocess.sparse_observation_mask_2d(
+            (8, 8),
+            scale=2,
+            offset=0,
+            pattern="random",
+            seed=123,
+        )
+        mask_b = preprocess.sparse_observation_mask_2d(
+            (8, 8),
+            scale=2,
+            offset=0,
+            pattern="random",
+            seed=123,
+        )
+        mask_c = preprocess.sparse_observation_mask_2d(
+            (8, 8),
+            scale=2,
+            offset=0,
+            pattern="random",
+            seed=124,
+        )
+
+        self.assertEqual(mask_a.shape, (8, 8))
+        self.assertEqual(int(mask_a.sum()), 16)
+        np.testing.assert_array_equal(mask_a, mask_b)
+        self.assertFalse(np.array_equal(mask_a, mask_c))
+
+    def test_jittered_sparse_mask_keeps_one_observation_per_block(self) -> None:
+        mask = preprocess.sparse_observation_mask_2d(
+            (8, 8),
+            scale=2,
+            offset=0,
+            pattern="jittered",
+            seed=123,
+        )
+
+        self.assertEqual(mask.shape, (8, 8))
+        self.assertEqual(int(mask.sum()), 16)
+        for row in range(0, 8, 2):
+            for col in range(0, 8, 2):
+                self.assertEqual(int(mask[row : row + 2, col : col + 2].sum()), 1)
+
+    def test_jittered_sparse_products_are_full_grid_and_finite(self) -> None:
+        yy, xx = np.meshgrid(
+            np.arange(8, dtype=np.float32),
+            np.arange(8, dtype=np.float32),
+            indexing="ij",
+        )
+        field = yy * 10.0 + xx
+
+        sparse, interp, mask = preprocess.build_sparse_products_2d(
+            field,
+            scale=2,
+            offset=0,
+            pattern="jittered",
+            seed=123,
+        )
+
+        self.assertEqual(sparse.shape, field.shape)
+        self.assertEqual(interp.shape, field.shape)
+        self.assertEqual(mask.shape, field.shape)
+        self.assertTrue(np.isfinite(interp).all())
+        np.testing.assert_allclose(sparse[mask > 0.5], field[mask > 0.5])
+        np.testing.assert_allclose(sparse[mask < 0.5], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

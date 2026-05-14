@@ -22,7 +22,12 @@ echo "train_session=${TRAIN_SESSION}"
 echo "run_dir=${RUN_DIR}"
 echo "eval_dir=${EVAL_DIR}"
 
-while tmux has-session -t "${TRAIN_SESSION}" 2>/dev/null; do
+session_exists_exact() {
+  local session_name="$1"
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq "${session_name}"
+}
+
+while session_exists_exact "${TRAIN_SESSION}"; do
   echo "[$(date --iso-8601=seconds)] waiting for tmux session ${TRAIN_SESSION} to finish..."
   sleep 120
 done

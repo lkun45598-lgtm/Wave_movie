@@ -91,6 +91,54 @@ class TemporalOceanNPYTest(unittest.TestCase):
             )
             torch.testing.assert_close(y_b_start[0, 0], torch.tensor([1101.0, 1111.0]))
 
+    def test_temporal_supervision_window_returns_neighboring_center_samples(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for split in ("train", "valid", "test"):
+                _write_fake_split(root, split)
+
+            dataset = OceanNPYDataset(
+                {
+                    "dataset_root": str(root),
+                    "dyn_vars": ["Vx", "Vy"],
+                    "normalize": False,
+                    "sample_factor": 2,
+                    "patch_size": None,
+                    "temporal_window": 3,
+                    "temporal_boundary": "clamp",
+                    "temporal_supervision_window": 3,
+                }
+            )
+
+            x_first, y_first, x_seq_first, y_seq_first = dataset.train_dataset[0]
+            self.assertEqual(tuple(x_first.shape), (2, 2, 6))
+            self.assertEqual(tuple(y_first.shape), (4, 4, 2))
+            self.assertEqual(tuple(x_seq_first.shape), (3, 2, 2, 6))
+            self.assertEqual(tuple(y_seq_first.shape), (3, 4, 4, 2))
+
+            torch.testing.assert_close(x_seq_first[0], x_first)
+            torch.testing.assert_close(x_seq_first[1], x_first)
+            torch.testing.assert_close(y_seq_first[0], y_first)
+            torch.testing.assert_close(y_seq_first[1], y_first)
+            torch.testing.assert_close(
+                x_seq_first[2, 0, 0],
+                torch.tensor([1.0, 11.0, 2.0, 12.0, 3.0, 13.0]),
+            )
+            torch.testing.assert_close(
+                y_seq_first[2, 0, 0],
+                torch.tensor([1002.0, 1012.0]),
+            )
+
+            _, _, x_seq_b_start, y_seq_b_start = dataset.train_dataset[3]
+            torch.testing.assert_close(
+                x_seq_b_start[0, 0, 0],
+                torch.tensor([101.0, 111.0, 101.0, 111.0, 102.0, 112.0]),
+            )
+            torch.testing.assert_close(
+                y_seq_b_start[0, 0, 0],
+                torch.tensor([1101.0, 1111.0]),
+            )
+
     def test_lr_and_hr_dynamic_variables_can_differ_for_sparse_mask_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -217,6 +265,44 @@ class TemporalOceanNPYTest(unittest.TestCase):
         self.assertEqual(constrained.dtype, torch.float32)
         torch.testing.assert_close(constrained[..., 0], x[..., 0], rtol=0.0, atol=0.0)
 
+    def test_sparse_known_constraint_supports_per_output_frame_masks(self) -> None:
+        pred = torch.full((1, 1, 3, 3), -9.0)
+        x = torch.zeros(1, 1, 3, 6)
+        x[..., 0] = torch.tensor([[1.0, 2.0, 3.0]])
+        x[..., 1] = torch.tensor([[1.0, 0.0, 0.0]])
+        x[..., 2] = torch.tensor([[4.0, 5.0, 6.0]])
+        x[..., 3] = torch.tensor([[0.0, 1.0, 0.0]])
+        x[..., 4] = torch.tensor([[7.0, 8.0, 9.0]])
+        x[..., 5] = torch.tensor([[0.0, 0.0, 1.0]])
+
+        constrained = apply_sparse_known_constraint(
+            pred,
+            x,
+            observed_value_channels=[0, 2, 4],
+            mask_channel=[1, 3, 5],
+        )
+
+        expected = torch.tensor(
+            [[[[1.0, -9.0, -9.0], [-9.0, 5.0, -9.0], [-9.0, -9.0, 9.0]]]]
+        )
+        torch.testing.assert_close(constrained, expected)
+
+    def test_temporal_sequence_output_target_flattens_time_into_channels(self) -> None:
+        y_seq = torch.zeros(1, 3, 1, 2, 1)
+        y_seq[:, 0, :, :, 0] = torch.tensor([[1.0, 2.0]])
+        y_seq[:, 1, :, :, 0] = torch.tensor([[3.0, 4.0]])
+        y_seq[:, 2, :, :, 0] = torch.tensor([[5.0, 6.0]])
+
+        target = BaseTrainer._temporal_sequence_target_from_y_seq(y_seq)
+        center = BaseTrainer._select_center_temporal_output(target, temporal_output_window=3)
+
+        self.assertEqual(tuple(target.shape), (1, 1, 2, 3))
+        torch.testing.assert_close(
+            target,
+            torch.tensor([[[[1.0, 3.0, 5.0], [2.0, 4.0, 6.0]]]]),
+        )
+        torch.testing.assert_close(center, torch.tensor([[[[3.0], [4.0]]]]))
+
     def test_inference_can_disable_sparse_known_constraint_during_training(self) -> None:
         class ConstantModel(torch.nn.Module):
             def forward(self, x):
@@ -243,6 +329,38 @@ class TemporalOceanNPYTest(unittest.TestCase):
             [[[[1.0], [-9.0], [3.0]], [[-9.0], [5.0], [-9.0]]]]
         )
         torch.testing.assert_close(constrained, expected)
+
+    def test_inference_can_return_temporal_sequence_channels_and_select_center(self) -> None:
+        class ConstantSequenceModel(torch.nn.Module):
+            def forward(self, x):
+                return torch.stack(
+                    [
+                        torch.full(x.shape[:-1], 1.0, device=x.device),
+                        torch.full(x.shape[:-1], 2.0, device=x.device),
+                        torch.full(x.shape[:-1], 3.0, device=x.device),
+                    ],
+                    dim=-1,
+                )
+
+        trainer = BaseTrainer.__new__(BaseTrainer)
+        trainer.model = ConstantSequenceModel()
+        trainer.model_divisor = 1
+        trainer.residual_learning = False
+        trainer.sparse_known_constraint = False
+        trainer.temporal_output_window = 3
+
+        x = torch.zeros(1, 2, 3, 3)
+        y = torch.zeros(1, 2, 3, 1)
+        output_shape = (1, 2, 3, 3)
+
+        sequence_pred = BaseTrainer.inference(trainer, x, y, output_shape=output_shape)
+        center = BaseTrainer._select_center_temporal_output(
+            sequence_pred,
+            temporal_output_window=3,
+        )
+
+        self.assertEqual(tuple(sequence_pred.shape), output_shape)
+        torch.testing.assert_close(center, torch.full_like(y, 2.0))
 
     def test_active_missing_loss_mask_uses_unobserved_active_target_pixels(self) -> None:
         base_mask = torch.ones(1, 2, 3, 1, dtype=torch.bool)

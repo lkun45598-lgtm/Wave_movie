@@ -159,9 +159,19 @@ def apply_sparse_known_constraint(
             f"{observed.shape[-1]} != {pred.shape[-1]}"
         )
 
-    mask = x[..., int(mask_channel)]
+    if isinstance(mask_channel, (list, tuple)):
+        mask = x[..., [int(channel) for channel in mask_channel]]
+    else:
+        mask = x[..., int(mask_channel)]
     if mask.ndim == pred.ndim - 1:
         mask = mask.unsqueeze(-1)
+    if mask.shape[-1] == 1 and pred.shape[-1] != 1:
+        mask = mask.expand(*mask.shape[:-1], pred.shape[-1])
+    if mask.shape[-1] != pred.shape[-1]:
+        raise ValueError(
+            "Observed sparse mask channel count must match prediction channels: "
+            f"{mask.shape[-1]} != {pred.shape[-1]}"
+        )
 
     if observed.shape[1:3] != pred.shape[1:3]:
         observed = F.interpolate(
@@ -345,6 +355,24 @@ class BaseTrainer:
                 self.train_args.get('loss_active_threshold', 0.0),
             )
         )
+        self.temporal_consistency_weight = float(
+            self.optim_args.get('temporal_consistency_weight', 0.0)
+        )
+        self.temporal_consistency_observed_channel = self.optim_args.get(
+            'temporal_consistency_observed_channel',
+            self.loss_mask_observed_channel,
+        )
+        self.temporal_output_window = int(
+            self.model_args.get(
+                'temporal_output_window',
+                self.optim_args.get('temporal_output_window', 1),
+            )
+            or 1
+        )
+        if self.temporal_output_window < 1 or self.temporal_output_window % 2 == 0:
+            raise ValueError(
+                f"temporal_output_window must be a positive odd integer, got {self.temporal_output_window}"
+            )
         self.grad_clip = self.optim_args.get('grad_clip', self.train_args.get('grad_clip', None))
         self.nan_guard = bool(self.train_args.get('nan_guard', True))
         self.residual_source_channels = self._resolve_residual_source_channels()
@@ -428,6 +456,13 @@ class BaseTrainer:
             )
         if self.grad_clip is not None:
             self.main_log("Gradient clipping: max_norm={}".format(self.grad_clip))
+        if self.temporal_consistency_weight:
+            self.main_log(
+                "Temporal consistency loss: weight={} observed_mask_channel={}".format(
+                    self.temporal_consistency_weight,
+                    self.temporal_consistency_observed_channel,
+                )
+            )
 
         self.data = self.data_args['name']
         self.main_log("Loading {} dataset".format(self.data))
@@ -583,6 +618,146 @@ class BaseTrainer:
             active_threshold=self.loss_active_threshold,
         )
 
+    @staticmethod
+    def _parse_batch(batch, default_mask):
+        if len(batch) == 2:
+            x, y = batch
+            return x, y, default_mask, None, None
+        if len(batch) == 3:
+            x, y, mask_hr = batch
+            return x, y, mask_hr, None, None
+        if len(batch) == 4:
+            x, y, x_seq, y_seq = batch
+            return x, y, default_mask, x_seq, y_seq
+        if len(batch) == 5:
+            x, y, mask_hr, x_seq, y_seq = batch
+            return x, y, mask_hr, x_seq, y_seq
+        raise ValueError(f"Unexpected batch size {len(batch)}; expected 2, 3, 4, or 5 tensors")
+
+    @staticmethod
+    def _temporal_sequence_target_from_y_seq(y_seq):
+        if y_seq.ndim != 5:
+            raise ValueError(f"Expected y_seq shape [B, T, H, W, C], got {tuple(y_seq.shape)}")
+        batch, sequence_length, height, width, channels = y_seq.shape
+        return (
+            y_seq.permute(0, 2, 3, 1, 4)
+            .contiguous()
+            .reshape(batch, height, width, sequence_length * channels)
+        )
+
+    @staticmethod
+    def _temporal_sequence_channels_to_seq(pred, temporal_output_window):
+        if pred.ndim != 4:
+            raise ValueError(f"Expected prediction shape [B, H, W, C], got {tuple(pred.shape)}")
+        if pred.shape[-1] % temporal_output_window != 0:
+            raise ValueError(
+                "Prediction channels must be divisible by temporal_output_window: "
+                f"{pred.shape[-1]} % {temporal_output_window} != 0"
+            )
+        batch, height, width, channels = pred.shape
+        output_channels = channels // temporal_output_window
+        return (
+            pred.reshape(batch, height, width, temporal_output_window, output_channels)
+            .permute(0, 3, 1, 2, 4)
+            .contiguous()
+        )
+
+    @staticmethod
+    def _select_center_temporal_output(pred, temporal_output_window):
+        if temporal_output_window <= 1:
+            return pred
+        pred_seq = BaseTrainer._temporal_sequence_channels_to_seq(
+            pred,
+            temporal_output_window,
+        )
+        return pred_seq[:, temporal_output_window // 2]
+
+    def _temporal_output_shape(self, y):
+        if self.temporal_output_window <= 1:
+            return tuple(y.shape)
+        return tuple(y.shape[:-1]) + (y.shape[-1] * self.temporal_output_window,)
+
+    def _temporal_sequence_reconstruction_loss(self, pred_seq, target_seq, x_seq, base_mask):
+        if pred_seq.shape != target_seq.shape:
+            raise ValueError(
+                f"Temporal sequence reconstruction shape mismatch: {pred_seq.shape} != {target_seq.shape}"
+            )
+        losses = []
+        original_observed_channel = self.loss_mask_observed_channel
+        temporal_observed_channel = self.temporal_consistency_observed_channel
+        try:
+            for step in range(pred_seq.shape[1]):
+                if isinstance(temporal_observed_channel, (list, tuple)):
+                    self.loss_mask_observed_channel = temporal_observed_channel[step]
+                else:
+                    self.loss_mask_observed_channel = temporal_observed_channel
+                loss_mask = self.build_loss_mask(base_mask, x_seq[:, step], target_seq[:, step])
+                losses.append(
+                    self.loss_fn(
+                        pred_seq[:, step],
+                        target_seq[:, step],
+                        mask=loss_mask,
+                        input_tensor=x_seq[:, step],
+                        observed_mask_channel=self.loss_mask_observed_channel,
+                    )
+                )
+        finally:
+            self.loss_mask_observed_channel = original_observed_channel
+        return torch.stack(losses).mean()
+
+    def _temporal_consistency_loss(self, pred_seq, target_seq, x_seq, base_mask):
+        if pred_seq.ndim != 5 or target_seq.ndim != 5 or x_seq.ndim != 5:
+            raise ValueError(
+                "Temporal consistency expects [B, T, H, W, C] tensors, got "
+                f"pred={tuple(pred_seq.shape)}, target={tuple(target_seq.shape)}, "
+                f"x={tuple(x_seq.shape)}"
+            )
+        if pred_seq.shape != target_seq.shape:
+            raise ValueError(
+                f"Temporal prediction/target shape mismatch: {pred_seq.shape} != {target_seq.shape}"
+            )
+        if pred_seq.shape[1] < 2:
+            return pred_seq.new_tensor(0.0)
+
+        pred_dt = pred_seq[:, 1:] - pred_seq[:, :-1]
+        target_dt = target_seq[:, 1:] - target_seq[:, :-1]
+        losses = []
+        original_observed_channel = self.loss_mask_observed_channel
+        temporal_observed_channel = getattr(
+            self,
+            "temporal_consistency_observed_channel",
+            original_observed_channel,
+        )
+        if temporal_observed_channel is not None:
+            self.loss_mask_observed_channel = temporal_observed_channel
+        try:
+            for step in range(pred_seq.shape[1] - 1):
+                if isinstance(temporal_observed_channel, (list, tuple)):
+                    self.loss_mask_observed_channel = temporal_observed_channel[step]
+                left_mask = self.build_loss_mask(base_mask, x_seq[:, step], target_seq[:, step])
+                if isinstance(temporal_observed_channel, (list, tuple)):
+                    self.loss_mask_observed_channel = temporal_observed_channel[step + 1]
+                right_mask = self.build_loss_mask(base_mask, x_seq[:, step + 1], target_seq[:, step + 1])
+                diff_mask = left_mask & right_mask
+                weights = diff_mask.to(dtype=pred_dt.dtype).expand_as(pred_dt[:, step])
+                denom = weights.sum().clamp(min=1.0)
+                losses.append((torch.abs(pred_dt[:, step] - target_dt[:, step]) * weights).sum() / denom)
+        finally:
+            self.loss_mask_observed_channel = original_observed_channel
+
+        return torch.stack(losses).mean() if losses else pred_seq.new_tensor(0.0)
+
+    def _infer_temporal_sequence(self, x_seq, y_seq):
+        batch_size, sequence_length = x_seq.shape[:2]
+        flat_x = x_seq.reshape(batch_size * sequence_length, *x_seq.shape[2:])
+        flat_y = y_seq.reshape(batch_size * sequence_length, *y_seq.shape[2:])
+        flat_pred = self.inference(
+            flat_x,
+            flat_y,
+            apply_known_constraint=self.sparse_known_constraint_train,
+        )
+        return flat_pred.reshape(batch_size, sequence_length, *flat_pred.shape[1:])
+
     def build_data(self, **kwargs):
         if self.data_args['name'] not in _dataset_dict:
             raise NotImplementedError("Dataset {} not implemented".format(self.data_args['name']))
@@ -635,6 +810,13 @@ class BaseTrainer:
             pin_memory=True)
 
         self.normalizer = dataset.normalizer
+        if (self.temporal_consistency_weight or self.temporal_output_window > 1) and (
+            not hasattr(dataset.train_dataset, 'temporal_supervision_indices')
+            or dataset.train_dataset.temporal_supervision_indices is None
+        ):
+            raise ValueError(
+                "temporal consistency or sequence output requires data.temporal_supervision_window > 1"
+            )
 
         # 加载陆地掩码（如果数据集提供了 mask）
         if hasattr(dataset, 'mask_hr') and dataset.mask_hr is not None:
@@ -991,17 +1173,65 @@ class BaseTrainer:
             self.train_sampler.set_epoch(epoch)
         self.model.train()
         for i, batch in enumerate(self.train_loader):
-            # Patch 训练时 batch = (x, y, mask_hr_patch)，否则 (x, y)
-            if len(batch) == 3:
-                x, y, mask_hr = batch
+            x, y, mask_hr, x_seq, y_seq = self._parse_batch(batch, self.mask_hr)
+            if mask_hr is not None:
                 mask_hr = mask_hr.to(self.device, non_blocking=True)
-            else:
-                x, y = batch
-                mask_hr = self.mask_hr
             x = x.to(self.device, non_blocking=True)
             y = y.to(self.device, non_blocking=True)
+            if x_seq is not None:
+                x_seq = x_seq.to(self.device, non_blocking=True)
+                y_seq = y_seq.to(self.device, non_blocking=True)
             with torch.amp.autocast('cuda', enabled=self.use_amp):
-                if self.gradient_checkpointing:
+                if self.temporal_output_window > 1 and x_seq is not None and y_seq is not None:
+                    if y_seq.shape[1] != self.temporal_output_window:
+                        raise ValueError(
+                            "temporal_output_window must match y_seq length: "
+                            f"{self.temporal_output_window} != {y_seq.shape[1]}"
+                        )
+                    sequence_target = self._temporal_sequence_target_from_y_seq(y_seq)
+                    sequence_pred = self.inference(
+                        x,
+                        sequence_target,
+                        apply_known_constraint=self.sparse_known_constraint_train,
+                        output_shape=sequence_target.shape,
+                    )
+                    pred_seq = self._temporal_sequence_channels_to_seq(
+                        sequence_pred,
+                        self.temporal_output_window,
+                    )
+                    y_pred = pred_seq[:, self.temporal_output_window // 2]
+                    loss = self._temporal_sequence_reconstruction_loss(
+                        pred_seq,
+                        y_seq,
+                        x_seq,
+                        mask_hr,
+                    )
+                    if self.temporal_consistency_weight:
+                        loss = loss + self.temporal_consistency_weight * self._temporal_consistency_loss(
+                            pred_seq,
+                            y_seq,
+                            x_seq,
+                            mask_hr,
+                        )
+                elif self.temporal_consistency_weight and x_seq is not None and y_seq is not None:
+                    pred_seq = self._infer_temporal_sequence(x_seq, y_seq)
+                    center_index = pred_seq.shape[1] // 2
+                    y_pred = pred_seq[:, center_index]
+                    loss_mask = self.build_loss_mask(mask_hr, x, y)
+                    loss = self.loss_fn(
+                        y_pred,
+                        y,
+                        mask=loss_mask,
+                        input_tensor=x,
+                        observed_mask_channel=self.loss_mask_observed_channel,
+                    )
+                    loss = loss + self.temporal_consistency_weight * self._temporal_consistency_loss(
+                        pred_seq,
+                        y_seq,
+                        x_seq,
+                        mask_hr,
+                    )
+                elif self.gradient_checkpointing:
                     y_pred = torch.utils.checkpoint.checkpoint(
                         lambda xi, yi: self.inference(
                             xi,
@@ -1018,14 +1248,14 @@ class BaseTrainer:
                         y,
                         apply_known_constraint=self.sparse_known_constraint_train,
                     )
-                loss_mask = self.build_loss_mask(mask_hr, x, y)
-                loss = self.loss_fn(
-                    y_pred,
-                    y,
-                    mask=loss_mask,
-                    input_tensor=x,
-                    observed_mask_channel=self.loss_mask_observed_channel,
-                )
+                    loss_mask = self.build_loss_mask(mask_hr, x, y)
+                    loss = self.loss_fn(
+                        y_pred,
+                        y,
+                        mask=loss_mask,
+                        input_tensor=x,
+                        observed_mask_channel=self.loss_mask_observed_channel,
+                    )
             if self.nan_guard and not torch.isfinite(loss).all():
                 raise FloatingPointError(
                     f"Non-finite training loss at epoch={epoch}, batch={i}: {loss.item()}"
@@ -1096,16 +1326,22 @@ class BaseTrainer:
         else:  # [B, C, H, W]
             return x[:, :, :h, :w]
 
-    def inference(self, x, y, apply_known_constraint=True, **kwargs):
+    def inference(self, x, y, apply_known_constraint=True, output_shape=None, **kwargs):
         x_input = x
         x, orig_h, orig_w = self._pad_to_divisible(x, self.model_divisor, channel_last=True)
         result = self.model(x)
-        result = self._crop_to_original(result, y.shape[1], y.shape[2], channel_last=True)
-        result = result.reshape(y.shape)
+        target_shape = tuple(output_shape or y.shape)
+        result = self._crop_to_original(result, target_shape[1], target_shape[2], channel_last=True)
+        if tuple(result.shape) != target_shape:
+            if result.numel() != int(np.prod(target_shape)):
+                raise ValueError(
+                    f"Model output shape {tuple(result.shape)} cannot be reshaped to {target_shape}"
+                )
+            result = result.reshape(target_shape)
         if self.residual_learning:
             result = result + build_hr_bicubic_baseline(
                 x_input,
-                target_shape=y.shape,
+                target_shape=target_shape,
                 normalizer=self.normalizer,
                 source_channels=self.residual_source_channels,
             )
@@ -1135,16 +1371,21 @@ class BaseTrainer:
         self.model.eval()
         with torch.no_grad(), torch.amp.autocast('cuda', enabled=self.use_amp):
             for batch in eval_loader:
-                # patch 模式返回 (x, y, mask_patch)，全图模式返回 (x, y)
-                if len(batch) == 3:
-                    x, y, mask_patch = batch
+                x, y, mask_patch, _, _ = self._parse_batch(batch, self.mask_hr)
+                if mask_patch is not None:
                     mask_patch = mask_patch.to(self.device, non_blocking=True)
-                else:
-                    x, y = batch
-                    mask_patch = self.mask_hr  # 全局 mask（全图模式）
                 x = x.to(self.device, non_blocking=True)
                 y = y.to(self.device, non_blocking=True)
-                y_pred = self.inference(x, y, **kwargs)
+                y_pred = self.inference(
+                    x,
+                    y,
+                    output_shape=self._temporal_output_shape(y),
+                    **kwargs,
+                )
+                y_pred = self._select_center_temporal_output(
+                    y_pred,
+                    self.temporal_output_window,
+                )
                 # normalizer 可能是 dict {'hr': ..., 'lr': ...} 或单个对象
                 _norm = self.normalizer['hr'] if isinstance(self.normalizer, dict) else self.normalizer
                 # Patch 模式下 PGN 的 mean/std 形状是全图空间维度，与 patch 维度不匹配
@@ -1239,7 +1480,15 @@ class BaseTrainer:
             x_batch = x_patch.unsqueeze(0).to(self.device)
             y_batch = y_patch.unsqueeze(0).to(self.device)
             with torch.amp.autocast('cuda', enabled=self.use_amp):
-                y_pred = self.inference(x_batch, y_batch)
+                y_pred = self.inference(
+                    x_batch,
+                    y_batch,
+                    output_shape=self._temporal_output_shape(y_batch),
+                )
+                y_pred = self._select_center_temporal_output(
+                    y_pred,
+                    self.temporal_output_window,
+                )
 
             # 累加到画布
             canvas_sum[top:top+ps, left:left+ps, :] += y_pred[0].cpu().float()
@@ -1311,14 +1560,19 @@ class BaseTrainer:
                 count = 0
                 with torch.amp.autocast('cuda', enabled=self.use_amp):
                     for batch in self.test_loader:
-                        if len(batch) == 3:
-                            x, y, _ = batch
-                        else:
-                            x, y = batch
+                        x, y, _, _, _ = self._parse_batch(batch, self.mask_hr)
 
                         x = x.to(self.device, non_blocking=True)
                         y = y.to(self.device, non_blocking=True)
-                        y_pred = self.inference(x, y)
+                        y_pred = self.inference(
+                            x,
+                            y,
+                            output_shape=self._temporal_output_shape(y),
+                        )
+                        y_pred = self._select_center_temporal_output(
+                            y_pred,
+                            self.temporal_output_window,
+                        )
 
                         _norm_hr = self.normalizer.get('hr') if isinstance(self.normalizer, dict) else self.normalizer
                         _norm_lr = self.normalizer.get('lr') if isinstance(self.normalizer, dict) else self.normalizer
@@ -1440,7 +1694,15 @@ class BaseTrainer:
                         x_b = x.unsqueeze(0).to(self.device)
                         y_b = y.unsqueeze(0).to(self.device)
                         with torch.amp.autocast('cuda', enabled=self.use_amp):
-                            y_pred = self.inference(x_b, y_b)
+                            y_pred = self.inference(
+                                x_b,
+                                y_b,
+                                output_shape=self._temporal_output_shape(y_b),
+                            )
+                            y_pred = self._select_center_temporal_output(
+                                y_pred,
+                                self.temporal_output_window,
+                            )
 
                         norm_hr = self.normalizer.get('hr') if isinstance(self.normalizer, dict) else self.normalizer
                         if norm_hr is not None:

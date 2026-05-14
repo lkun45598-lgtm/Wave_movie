@@ -8,6 +8,12 @@ For the step-by-step experiment record, output paths, metrics, and next-experime
 docs/bohai-vz-experiment-log.md
 ```
 
+For the current task definition, literature alignment, and rationale for the next targeted experiment, see:
+
+```text
+docs/bohai-task-definition-and-literature.md
+```
+
 ## Dataset
 
 - Raw/processed data root used locally: `/data/Bohai_Sea/process_data_sparsemask_2x`
@@ -70,19 +76,20 @@ For the 5-frame input, the center-frame channels are:
 
 ## Main Result
 
-Full-frame test evaluation covers 1200 frames.
+Full-frame test evaluation covers 1200 frames. The early Temporal3DUNet experiments show that the sparse-mask task is learnable, while the current strongest full-test baseline is the 200-epoch ResShift run.
 
 | Method | RMSE | MAE | RFNE | ACC | Max Error | SSIM | RMSE Reduction vs Interp |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Interp baseline | 0.037303 | 0.010568 | 1.053080 | 0.301673 | 13.366 | 0.7384 | baseline |
 | Direct | 0.022614 | 0.008590 | 0.638410 | 0.770408 | 8.662 | 0.7914 | 39.38% |
 | Explicit residual | 0.022785 | 0.008935 | 0.643216 | 0.767572 | 9.308 | 0.7950 | 38.92% |
+| ResShift 200ep | 0.015829 | 0.006835 | 0.446840 | 0.897080 | 10.668 | 0.8564 | 57.57% |
 
 Interpretation:
 
-- Direct reconstruction is the current primary method because it has lower RMSE, RFNE, and max error.
-- Explicit residual reconstruction slightly improves SSIM and peak ratio, but it does not improve the main pointwise error metrics.
-- The direct model can be interpreted as an implicit residual-like method because `Vz_interp` is already part of the input.
+- ResShift 200ep is the current strongest numerical baseline on full-frame RMSE, RFNE, ACC, SSIM, and peak ratio.
+- Temporal3DUNet Direct remains an important controlled baseline because it is simpler and easier to modify for loss/temporal ablations.
+- Explicit residual reconstruction slightly improves SSIM and peak ratio over early Direct, but it does not improve the main pointwise error metrics.
 
 ## Where The Model Still Fails
 
@@ -100,6 +107,7 @@ Current failure modes:
 - The hardest frames are often event-initial frames, for example `S1_WRRZ_000001`, `S1_WCZ_000001`, and `S1_WATZ_000001`.
 - Some frames have worse local maximum error than interpolation, even though average RMSE improves.
 - Near-zero inactive regions can contain small model-induced artifacts.
+- ResShift 200ep improves the global result substantially, but the remaining hard cases are still local high-frequency/phase-structure errors rather than uniform amplitude bias.
 
 ## Reproduction Commands
 
@@ -169,7 +177,15 @@ Full predictions, checkpoints, logs, and large `testouts/` outputs are intention
 
 ## Next Experiments
 
-- Run the mask-aware sparse observation config and compare it against the current direct/residual runs on missing, active-missing, peak ratio, and max-error metrics.
-- Compare LR construction methods: sparse-only, nearest interpolation, linear interpolation, anti-aliased/downsampled baselines, and residual variants.
-- Track primary metrics on `missing`, `active-missing`, peak ratio, peak location error, and temporal consistency instead of relying only on full-field RMSE.
-- Add stronger peak-aware and temporal-consistency losses if the focus is event-initial frames and strong wavefront reconstruction.
+- Do not start another broad model sweep before a specific hypothesis is fixed.
+- `E13 - Regular25 Temporal3DUNet with Mixed Boundary Loss` was completed as a control experiment.
+- E13 reduced inactive-missing RMSE (`0.006359 -> 0.005017` vs Direct baseline) but worsened missing RMSE (`0.026113 -> 0.027990`), active-missing RMSE (`0.036494 -> 0.039392`), ACC, and peak ratio.
+- The result suggests that simply adding missing/inactive/boundary weights makes the model more conservative and does not solve active wavefront structure recovery.
+- `E14 - Active-Missing High-Frequency Loss` was also completed as a control experiment.
+- E14 kept the structure loss restricted to active-missing regions, but still did not beat the Direct baseline: RMSE `0.022614 -> 0.022820`, active-missing RMSE `0.036494 -> 0.036685`, inactive-missing RMSE `0.006359 -> 0.007165`.
+- This suggests that simple gradient/Laplacian-style spatial sharpness losses are not the right main lever for the current failure mode; they do not reliably recover missing phase/structure and may introduce background artifacts.
+- `E15 - Failure Mode Diagnostics` confirmed the same root cause. `Vz_interp` keeps only about `0.158` high-band power relative to HR, while Direct/E14 reach only about `0.593/0.606`; ResShift200ep reaches about `0.882`.
+- E14 improves high-band power slightly but worsens RMSE, p99 error, and active-missing ACC versus Direct. It beats Direct on active-missing RMSE in only `26.3%` of frames, while ResShift200ep beats Direct in `99.75%` of frames.
+- The dominant hard cases are early strong-event frames, especially frame 1-2 in several test cases. In those frames, the model often predicts only `3%-10%` of the true HR peak at the HR peak location, so the issue is peak/phase/propagation recovery, not just visual sharpness.
+- A true temporal-derivative loss is still deferred because the current training sample only returns center-frame HR. Implementing `HR(t)-HR(t-1)` correctly requires either temporal HR targets or a sequence-to-sequence model.
+- The next useful experiment should target time/phase consistency or missing-structure ambiguity directly, rather than adding more single-frame spatial derivative terms.

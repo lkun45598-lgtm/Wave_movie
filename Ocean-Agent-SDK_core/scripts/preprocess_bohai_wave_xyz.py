@@ -23,6 +23,7 @@ import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
@@ -39,8 +40,10 @@ SOURCE_SUBDIR = "To_ZGT_wave_movie"
 SOURCE_COMPONENTS = ("X", "Y", "Z")
 TARGET_VARS = {"X": "Vx", "Y": "Vy", "Z": "Vz"}
 SPARSE_MASK_METHOD = "sparse_mask"
+SPARSE_MASK_PATTERNS = ("regular", "random", "jittered")
 
 _WORKER_CONTEXT: dict[str, Any] = {}
+_SCATTER_INTERP_CACHE: dict[tuple[tuple[int, int], str], dict[str, Any]] = {}
 
 
 @dataclass(frozen=True)
@@ -258,21 +261,59 @@ def sparse_observation_mask_2d(
     shape: tuple[int, int],
     scale: int,
     offset: int,
+    pattern: str = "regular",
+    seed: int = 42,
 ) -> np.ndarray:
     height, width = shape
-    rows = sparse_sample_indices(height, scale, offset)
-    cols = sparse_sample_indices(width, scale, offset)
     mask = np.zeros((height, width), dtype=np.float32)
-    mask[np.ix_(rows, cols)] = 1.0
-    return mask
+
+    if pattern == "regular":
+        rows = sparse_sample_indices(height, scale, offset)
+        cols = sparse_sample_indices(width, scale, offset)
+        mask[np.ix_(rows, cols)] = 1.0
+        return mask
+
+    if pattern == "random":
+        observed_count = max(1, int(round(height * width / float(scale * scale))))
+        rng = np.random.default_rng(seed)
+        flat_indices = rng.choice(height * width, size=observed_count, replace=False)
+        mask.reshape(-1)[flat_indices] = 1.0
+        return mask
+
+    if pattern == "jittered":
+        if height % scale != 0 or width % scale != 0:
+            raise ValueError(
+                f"Jittered sparse mask requires shape divisible by scale: "
+                f"shape={shape}, scale={scale}"
+            )
+        rng = np.random.default_rng(seed)
+        for row in range(0, height, scale):
+            for col in range(0, width, scale):
+                row_offset = int(rng.integers(0, scale))
+                col_offset = int(rng.integers(0, scale))
+                mask[row + row_offset, col + col_offset] = 1.0
+        return mask
+
+    raise ValueError(
+        f"Unsupported sparse mask pattern: {pattern}. "
+        f"Expected one of {SPARSE_MASK_PATTERNS}"
+    )
 
 
 def sparse_zero_fill_2d(
     array: np.ndarray,
     scale: int,
     offset: int,
+    pattern: str = "regular",
+    seed: int = 42,
 ) -> np.ndarray:
-    mask = sparse_observation_mask_2d(array.shape, scale, offset)
+    mask = sparse_observation_mask_2d(
+        array.shape,
+        scale,
+        offset,
+        pattern=pattern,
+        seed=seed,
+    )
     return (array.astype(np.float32, copy=False) * mask).astype(np.float32, copy=False)
 
 
@@ -298,6 +339,106 @@ def sparse_linear_interpolate_2d(
         full_interp[:, col_index] = np.interp(full_rows, rows, row_interp[:, col_index])
 
     return full_interp.astype(np.float32)
+
+
+def sparse_scattered_interpolate_2d(
+    array: np.ndarray,
+    mask: np.ndarray,
+) -> np.ndarray:
+    """Interpolate arbitrary sparse observations back to the full tensor grid."""
+    try:
+        from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+        from scipy.spatial import Delaunay
+    except ImportError as exc:
+        raise ImportError(
+            "scipy is required for random/jittered sparse mask interpolation"
+        ) from exc
+
+    if array.shape != mask.shape:
+        raise ValueError(f"array and mask shapes differ: {array.shape} != {mask.shape}")
+
+    observed = mask > 0.5
+    if not np.any(observed):
+        raise ValueError("Sparse interpolation requires at least one observed point")
+
+    cache_key = (mask.shape, hashlib.sha1(mask.tobytes()).hexdigest())
+    cached = _SCATTER_INTERP_CACHE.get(cache_key)
+    if cached is None:
+        rows, cols = np.nonzero(observed)
+        points = np.column_stack([rows, cols]).astype(np.float64)
+        grid_rows, grid_cols = np.indices(array.shape, dtype=np.float64)
+        query_points = np.column_stack([grid_rows.ravel(), grid_cols.ravel()])
+        triangulation = Delaunay(points) if points.shape[0] >= 3 else None
+        cached = {
+            "observed": observed,
+            "points": points,
+            "query_points": query_points,
+            "triangulation": triangulation,
+        }
+        _SCATTER_INTERP_CACHE[cache_key] = cached
+
+    points = cached["points"]
+    query_points = cached["query_points"]
+    triangulation = cached["triangulation"]
+    values = array[observed].astype(np.float64, copy=False)
+
+    if triangulation is not None:
+        interp = LinearNDInterpolator(triangulation, values, fill_value=np.nan)(
+            query_points
+        )
+    else:
+        interp = np.full(query_points.shape[0], np.nan, dtype=np.float64)
+
+    missing = ~np.isfinite(interp)
+    if np.any(missing):
+        nearest = NearestNDInterpolator(points, values)
+        interp[missing] = nearest(query_points[missing])
+
+    return interp.reshape(array.shape).astype(np.float32)
+
+
+def sparse_interpolate_2d(
+    array: np.ndarray,
+    scale: int,
+    offset: int,
+    pattern: str = "regular",
+    seed: int = 42,
+) -> np.ndarray:
+    if pattern == "regular":
+        return sparse_linear_interpolate_2d(array, scale, offset)
+    mask = sparse_observation_mask_2d(
+        array.shape,
+        scale,
+        offset,
+        pattern=pattern,
+        seed=seed,
+    )
+    return sparse_scattered_interpolate_2d(array, mask)
+
+
+def build_sparse_products_2d(
+    array: np.ndarray,
+    scale: int,
+    offset: int,
+    pattern: str = "regular",
+    seed: int = 42,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    mask = sparse_observation_mask_2d(
+        array.shape,
+        scale,
+        offset,
+        pattern=pattern,
+        seed=seed,
+    )
+    sparse = (array.astype(np.float32, copy=False) * mask).astype(
+        np.float32,
+        copy=False,
+    )
+    if pattern == "regular":
+        interp = sparse_linear_interpolate_2d(array, scale, offset)
+    else:
+        interp = sparse_scattered_interpolate_2d(array, mask)
+    return sparse, interp, mask
 
 
 def downsample_2d(
@@ -610,6 +751,8 @@ def init_worker(
     point_offset: int,
     anti_alias_sigma: float | None,
     anti_alias_truncate: float,
+    sparse_mask_pattern: str,
+    sparse_mask_seed: int,
     output_root: str,
 ) -> None:
     _WORKER_CONTEXT.clear()
@@ -625,6 +768,8 @@ def init_worker(
             "point_offset": point_offset,
             "anti_alias_sigma": anti_alias_sigma,
             "anti_alias_truncate": anti_alias_truncate,
+            "sparse_mask_pattern": sparse_mask_pattern,
+            "sparse_mask_seed": sparse_mask_seed,
             "output_root": output_root,
         }
     )
@@ -652,6 +797,8 @@ def process_sample(sample: Sample) -> dict[str, Any]:
     point_offset = int(context["point_offset"])
     anti_alias_sigma = context["anti_alias_sigma"]
     anti_alias_truncate = float(context["anti_alias_truncate"])
+    sparse_mask_pattern = str(context["sparse_mask_pattern"])
+    sparse_mask_seed = int(context["sparse_mask_seed"])
     sample_stats: dict[str, dict[str, dict[str, float | int]]] = {}
     sparse_mask: np.ndarray | None = None
 
@@ -667,8 +814,13 @@ def process_sample(sample: Sample) -> dict[str, Any]:
         }
 
         if downsample_method == SPARSE_MASK_METHOD:
-            sparse = sparse_zero_fill_2d(hr, scale, point_offset)
-            interp = sparse_linear_interpolate_2d(hr, scale, point_offset)
+            sparse, interp, mask = build_sparse_products_2d(
+                hr,
+                scale,
+                point_offset,
+                pattern=sparse_mask_pattern,
+                seed=sparse_mask_seed,
+            )
             sparse_name = f"{target_var}_sparse"
             interp_name = f"{target_var}_interp"
             sparse_path = (
@@ -691,7 +843,7 @@ def process_sample(sample: Sample) -> dict[str, Any]:
             sample_stats[interp_name] = {"lr": stats_dict(interp)}
 
             if sparse_mask is None:
-                sparse_mask = sparse_observation_mask_2d(hr.shape, scale, point_offset)
+                sparse_mask = mask
                 mask_path = (
                     output_root
                     / sample.split
@@ -739,6 +891,8 @@ def process_all_samples(
     point_offset: int,
     anti_alias_sigma: float | None,
     anti_alias_truncate: float,
+    sparse_mask_pattern: str,
+    sparse_mask_seed: int,
     workers: int,
 ) -> dict[str, Any]:
     stats: dict[str, dict[str, StatsAccumulator]] = {}
@@ -766,6 +920,8 @@ def process_all_samples(
             point_offset,
             anti_alias_sigma,
             anti_alias_truncate,
+            sparse_mask_pattern,
+            sparse_mask_seed,
             str(output_root),
         )
         for sample in samples:
@@ -788,6 +944,8 @@ def process_all_samples(
                 point_offset,
                 anti_alias_sigma,
                 anti_alias_truncate,
+                sparse_mask_pattern,
+                sparse_mask_seed,
                 str(output_root),
             ),
         ) as executor:
@@ -835,6 +993,22 @@ def parse_args() -> argparse.Namespace:
             "sparse_mask keeps the HR grid and writes sparse/interpolated observations "
             "plus mask_observed for missing-trace reconstruction."
         ),
+    )
+    parser.add_argument(
+        "--sparse-mask-pattern",
+        choices=SPARSE_MASK_PATTERNS,
+        default="regular",
+        help=(
+            "Mask pattern for --downsample-method=sparse_mask. regular keeps the "
+            "legacy periodic grid; random samples a fixed global 1/scale^2 subset; "
+            "jittered samples one fixed random point per scale x scale block."
+        ),
+    )
+    parser.add_argument(
+        "--sparse-mask-seed",
+        type=int,
+        default=42,
+        help="Random seed for random/jittered sparse masks.",
     )
     parser.add_argument(
         "--point-offset",
@@ -927,6 +1101,9 @@ def main() -> None:
     print(f"lr_shape: {geometry.lr_shape}")
     print(f"scale: {args.scale}")
     print(f"downsample_method: {args.downsample_method}")
+    if args.downsample_method == SPARSE_MASK_METHOD:
+        print(f"sparse_mask_pattern: {args.sparse_mask_pattern}")
+        print(f"sparse_mask_seed: {args.sparse_mask_seed}")
     if args.downsample_method in {"point", "anti_alias_point"}:
         print(f"point_offset: {args.point_offset}")
     if args.downsample_method == "anti_alias_point":
@@ -951,6 +1128,8 @@ def main() -> None:
         point_offset=args.point_offset,
         anti_alias_sigma=args.anti_alias_sigma,
         anti_alias_truncate=args.anti_alias_truncate,
+        sparse_mask_pattern=args.sparse_mask_pattern,
+        sparse_mask_seed=args.sparse_mask_seed,
         workers=args.workers,
     )
 
@@ -970,6 +1149,12 @@ def main() -> None:
         "lr_dynamic_variables": lr_var_names(args.downsample_method),
         "scale": args.scale,
         "downsample_method": args.downsample_method,
+        "sparse_mask_pattern": args.sparse_mask_pattern
+        if args.downsample_method == SPARSE_MASK_METHOD
+        else None,
+        "sparse_mask_seed": args.sparse_mask_seed
+        if args.downsample_method == SPARSE_MASK_METHOD
+        else None,
         "point_offset": args.point_offset
         if args.downsample_method in {"point", "anti_alias_point"}
         else None,
@@ -1002,6 +1187,12 @@ def main() -> None:
         "lr_spatial_shape": list(geometry.lr_shape),
         "scale": args.scale,
         "downsample_method": args.downsample_method,
+        "sparse_mask_pattern": args.sparse_mask_pattern
+        if args.downsample_method == SPARSE_MASK_METHOD
+        else None,
+        "sparse_mask_seed": args.sparse_mask_seed
+        if args.downsample_method == SPARSE_MASK_METHOD
+        else None,
         "point_offset": args.point_offset
         if args.downsample_method in {"point", "anti_alias_point"}
         else None,
