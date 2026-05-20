@@ -206,6 +206,7 @@ class MaskedCompositeSRLoss(object):
       - laplacian_l1: masked second-order spatial structure L1
       - active_missing_laplacian_l1: second-order structure L1 on active missing points
       - fft_hf_l1: high-frequency Fourier magnitude L1
+      - fft_complex_hf_l1: high-frequency complex error L1 via FFT(pred - target)
       - peak_l1: L1 with larger weights on high-amplitude target regions
       - magnitude_l1: vector-magnitude L1 for multi-component velocity fields
       - observed_l1: L1 on sparse observed locations from the input mask
@@ -375,6 +376,20 @@ class MaskedCompositeSRLoss(object):
             high_mask = high_mask.unsqueeze(0)
 
         return torch.mean(torch.abs(torch.abs(pred_fft) - torch.abs(target_fft)) * high_mask)
+
+    def _fft_complex_hf_l1(self, pred, target):
+        err_cf = (pred - target).permute(0, 3, 1, 2)
+        err_fft = torch.fft.rfft2(err_cf, norm="ortho")
+
+        height, width = pred.shape[1], pred.shape[2]
+        fy = torch.fft.fftfreq(height, device=pred.device, dtype=pred.dtype)
+        fx = torch.fft.rfftfreq(width, device=pred.device, dtype=pred.dtype)
+        radius = torch.sqrt(fy[:, None] ** 2 + fx[None, :] ** 2)
+        high_mask = (radius >= self.fft_cutoff).to(pred.dtype)
+        while high_mask.ndim < err_fft.ndim:
+            high_mask = high_mask.unsqueeze(0)
+
+        return torch.mean(torch.abs(err_fft) * high_mask)
 
     def _laplacian_l1(self, pred, target, mask=None):
         pred_cf = pred.permute(0, 3, 1, 2)
@@ -554,6 +569,8 @@ class MaskedCompositeSRLoss(object):
             )
         if self._weight("fft_hf_l1"):
             total = total + self._weight("fft_hf_l1") * self._fft_hf_l1(pred, target)
+        if self._weight("fft_complex_hf_l1"):
+            total = total + self._weight("fft_complex_hf_l1") * self._fft_complex_hf_l1(pred, target)
         if self._weight("peak_l1"):
             total = total + self._weight("peak_l1") * self._peak_l1(pred, target, mask)
         if self._weight("magnitude_l1"):

@@ -47,6 +47,20 @@ class ResidualHighFrequencyTrainingTest(unittest.TestCase):
         self.assertGreater(float(loss_fn(pred, target)), 0.0)
         self.assertAlmostEqual(float(loss_fn(target, target)), 0.0, places=6)
 
+    def test_complex_hf_loss_detects_translation_phase_error(self) -> None:
+        amplitude_loss = MaskedCompositeSRLoss({"fft_hf_l1": 1.0, "fft_cutoff": 0.0})
+        complex_loss = MaskedCompositeSRLoss(
+            {"fft_complex_hf_l1": 1.0, "fft_cutoff": 0.0}
+        )
+        pred = torch.zeros(1, 8, 8, 1)
+        target = torch.zeros(1, 8, 8, 1)
+        pred[:, 2, 2, :] = 1.0
+        target[:, 2, 3, :] = 1.0
+
+        self.assertLess(float(amplitude_loss(pred, target)), 1e-6)
+        self.assertGreater(float(complex_loss(pred, target)), 0.01)
+        self.assertAlmostEqual(float(complex_loss(target, target)), 0.0, places=6)
+
     def test_masked_composite_loss_has_laplacian_structure_term(self) -> None:
         loss_fn = MaskedCompositeSRLoss({"laplacian_l1": 1.0})
         pred = torch.zeros(1, 5, 5, 1)
@@ -203,6 +217,54 @@ class ResidualHighFrequencyTrainingTest(unittest.TestCase):
 
         expected = (abs((2.0 - 1.0) - (3.0 - 1.0)) + abs((4.0 - 2.0) - (6.0 - 3.0))) / 2.0
         self.assertAlmostEqual(float(loss), expected, places=6)
+
+    def test_train_gradient_checkpointing_branch_computes_loss(self) -> None:
+        class TinyChannelModel(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.proj = torch.nn.Linear(1, 1)
+
+            def forward(self, x):
+                return self.proj(x)
+
+        trainer = BaseTrainer.__new__(BaseTrainer)
+        trainer.train_sampler = None
+        trainer.model = TinyChannelModel()
+        trainer.model.train()
+        trainer.train_loader = [
+            (
+                torch.ones(2, 4, 4, 1),
+                torch.zeros(2, 4, 4, 1),
+            )
+        ]
+        trainer.mask_hr = None
+        trainer.device = torch.device("cpu")
+        trainer.use_amp = False
+        trainer.scaler = torch.amp.GradScaler(enabled=False)
+        trainer.optimizer = torch.optim.AdamW(trainer.model.parameters(), lr=1e-3)
+        trainer.scheduler = None
+        trainer.model_divisor = 1
+        trainer.residual_learning = False
+        trainer.normalizer = {"lr": None, "hr": None}
+        trainer.residual_source_channels = None
+        trainer.sparse_known_constraint = False
+        trainer.sparse_known_constraint_train = False
+        trainer.sparse_known_value_channels = None
+        trainer.sparse_known_mask_channel = None
+        trainer.temporal_output_window = 1
+        trainer.temporal_consistency_weight = 0.0
+        trainer.gradient_checkpointing = True
+        trainer.loss_mask_mode = "static"
+        trainer.loss_mask_observed_channel = None
+        trainer.loss_active_threshold = 0.0
+        trainer.loss_fn = MaskedCompositeSRLoss({"l1": 1.0})
+        trainer.nan_guard = True
+        trainer.grad_clip = None
+        trainer._batch_bar = None
+
+        record = BaseTrainer.train(trainer, epoch=0)
+
+        self.assertGreater(record.to_dict()["train_loss"], 0.0)
 
     def test_build_hr_bicubic_baseline_decodes_lr_and_encodes_hr_space(self) -> None:
         lr_phys = torch.tensor([[[[1.0], [3.0]], [[5.0], [7.0]]]])

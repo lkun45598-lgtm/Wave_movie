@@ -1242,6 +1242,14 @@ class BaseTrainer:
                         y,
                         use_reentrant=False,
                     )
+                    loss_mask = self.build_loss_mask(mask_hr, x, y)
+                    loss = self.loss_fn(
+                        y_pred,
+                        y,
+                        mask=loss_mask,
+                        input_tensor=x,
+                        observed_mask_channel=self.loss_mask_observed_channel,
+                    )
                 else:
                     y_pred = self.inference(
                         x,
@@ -1475,6 +1483,13 @@ class BaseTrainer:
             lr_top = top // scale
             lr_left = left // scale
             x_patch = x_full[lr_top:lr_top+lr_ps, lr_left:lr_left+lr_ps, :]
+            if hasattr(dataset, "_append_condition_channels"):
+                x_patch = dataset._append_condition_channels(
+                    x_patch,
+                    sample_idx,
+                    lr_top,
+                    lr_left,
+                )
 
             # 推理（添加 batch 维度）
             x_batch = x_patch.unsqueeze(0).to(self.device)

@@ -56,6 +56,20 @@ def _write_sparse_split(root: Path, split: str) -> None:
     np.save(lr_mask_dir / f"{sample_name}.npy", mask)
 
 
+def _write_static_conditions(root: Path, shape: tuple[int, int]) -> None:
+    y_size, x_size = shape
+    x_values = np.tile(np.arange(x_size, dtype=np.float32), (y_size, 1))
+    y_values = np.tile(np.arange(y_size, dtype=np.float32)[:, None], (1, x_size))
+    z_values = np.linspace(10.0, 40.0, num=y_size * x_size, dtype=np.float32).reshape(shape)
+
+    for resolution in ("lr", "hr"):
+        static_dir = root / "static_variables" / resolution
+        static_dir.mkdir(parents=True, exist_ok=True)
+        np.save(static_dir / "00_lon_rho.npy", x_values)
+        np.save(static_dir / "10_lat_rho.npy", y_values)
+        np.save(static_dir / "20_z.npy", z_values)
+
+
 class TemporalOceanNPYTest(unittest.TestCase):
     def test_temporal_window_stacks_lr_frames_without_crossing_case_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -174,6 +188,136 @@ class TemporalOceanNPYTest(unittest.TestCase):
             )
             self.assertEqual(dataset.dyn_vars, ["Vz"])
             self.assertEqual(dataset.lr_dyn_vars, ["Vz_interp", "mask_observed"])
+
+    def test_condition_channels_append_after_temporal_lr_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for split in ("train", "valid", "test"):
+                _write_fake_split(root, split)
+            _write_static_conditions(root, shape=(2, 2))
+
+            dataset = OceanNPYDataset(
+                {
+                    "dataset_root": str(root),
+                    "dyn_vars": ["Vx", "Vy"],
+                    "normalize": False,
+                    "sample_factor": 2,
+                    "patch_size": None,
+                    "temporal_window": 3,
+                    "temporal_boundary": "clamp",
+                    "append_condition_channels": True,
+                    "condition_channels": ["x_norm", "y_norm", "z_norm", "t_norm"],
+                }
+            )
+
+            x_first, _ = dataset.train_dataset[0]
+
+            self.assertEqual(tuple(x_first.shape), (2, 2, 10))
+            torch.testing.assert_close(
+                x_first[0, 0, :6],
+                torch.tensor([1.0, 11.0, 1.0, 11.0, 2.0, 12.0]),
+            )
+            torch.testing.assert_close(
+                x_first[0, 0, 6:],
+                torch.tensor([-1.0, -1.0, -1.0, 0.0]),
+            )
+            self.assertEqual(
+                dataset.condition_channel_names,
+                ["x_norm", "y_norm", "z_norm", "t_norm"],
+            )
+
+    def test_source_condition_channels_can_use_avs_meter_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for split in ("train", "valid", "test"):
+                _write_sparse_split(root, split)
+            _write_static_conditions(root, shape=(4, 4))
+            source_info = root / "source_info.txt"
+            source_info.write_text(
+                "\n".join(
+                    [
+                        "############## 震源位置信息 ##############",
+                        "CaseA 0.0 0.0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            dataset = OceanNPYDataset(
+                {
+                    "dataset_root": str(root),
+                    "dyn_vars": ["Vz"],
+                    "hr_dyn_vars": ["Vz"],
+                    "lr_dyn_vars": ["Vz_interp", "mask_observed"],
+                    "normalize": False,
+                    "sample_factor": 1,
+                    "patch_size": None,
+                    "append_condition_channels": True,
+                    "condition_channels": [
+                        "source_dx_norm",
+                        "source_dy_norm",
+                        "source_r_norm",
+                    ],
+                    "source_info_path": str(source_info),
+                    "source_coordinate_mode": "avs_m",
+                }
+            )
+
+            x, _ = dataset.train_dataset[0]
+
+            self.assertEqual(tuple(x.shape), (4, 4, 5))
+            torch.testing.assert_close(x[0, 0, -3:], torch.tensor([0.0, 0.0, 0.0]))
+            self.assertGreater(float(x[0, 1, -3]), 0.0)
+            self.assertGreater(float(x[1, 0, -2]), 0.0)
+            self.assertGreater(float(x[-1, -1, -1]), 0.0)
+
+    def test_full_image_reconstruction_appends_condition_channels_to_patches(self) -> None:
+        class RecordingModel(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.seen_shapes: list[tuple[int, ...]] = []
+
+            def forward(self, x):
+                self.seen_shapes.append(tuple(x.shape))
+                return torch.zeros((*x.shape[:-1], 1), dtype=x.dtype, device=x.device)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for split in ("train", "valid", "test"):
+                _write_sparse_split(root, split)
+            _write_static_conditions(root, shape=(4, 4))
+
+            dataset = OceanNPYDataset(
+                {
+                    "dataset_root": str(root),
+                    "dyn_vars": ["Vz"],
+                    "hr_dyn_vars": ["Vz"],
+                    "lr_dyn_vars": ["Vz_interp", "mask_observed"],
+                    "normalize": False,
+                    "sample_factor": 1,
+                    "patch_size": 2,
+                    "append_condition_channels": True,
+                    "condition_channels": ["x_norm", "y_norm", "z_norm", "t_norm"],
+                }
+            )
+
+            model = RecordingModel()
+            trainer = BaseTrainer.__new__(BaseTrainer)
+            trainer.test_loader = type("Loader", (), {"dataset": dataset.test_dataset})()
+            trainer.device = torch.device("cpu")
+            trainer.use_amp = False
+            trainer.model = model
+            trainer.model_divisor = 1
+            trainer.residual_learning = False
+            trainer.sparse_known_constraint = False
+            trainer.temporal_output_window = 1
+            trainer.normalizer = {"hr": None, "lr": None}
+
+            result = BaseTrainer._reconstruct_full_image(trainer, 0)
+
+            self.assertEqual(tuple(result["sr"].shape), (4, 4, 1))
+            self.assertGreater(len(model.seen_shapes), 0)
+            self.assertTrue(all(shape[-1] == 6 for shape in model.seen_shapes))
 
     def test_static_mask_is_loaded_and_combined_with_nan_mask(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

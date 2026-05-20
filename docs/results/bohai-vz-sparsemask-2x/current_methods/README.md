@@ -77,3 +77,25 @@ outputs. On the two evaluated cases:
 Interpretation: a conservative refiner can slightly improve RMSE/SSIM, but the
 peak-forcing variant can overcorrect and degrade the field. It should remain a
 pilot, not the main result.
+
+## Next Targeted Experiment
+
+`E20 ResShift SourceConditioned` is configured but not trained yet.
+
+It keeps the current ResShift sparse-mask setup but changes the condition input
+from 15 channels to 22 channels:
+
+```text
+5 frames x [Vz_sparse, Vz_interp, mask_observed]
++ x_norm, y_norm, z_norm, t_norm, source_dx_norm, source_dy_norm, source_r_norm
+```
+
+The goal is to test whether explicit source/time/space conditioning improves
+active-missing wavefront structure and peak location recovery. This is a
+targeted test of the current failure mode, not a broad model sweep.
+
+Config:
+
+```text
+Ocean-Agent-SDK_core/configs/bohai_xyz_2x/bohai_vz_sparsemask_2x_resshift_source_conditioned_e20_gpu0.yaml
+```

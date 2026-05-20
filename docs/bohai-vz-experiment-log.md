@@ -1551,3 +1551,61 @@ hard-case 可视化路径
 ```
 
 如果某个实验失败，也要记录失败原因，不能只保留成功实验。
+
+## E20 - ResShift Source-Time-Space Conditioning
+
+- 日期：2026-05-15
+- 状态：configured, not trained yet
+- 目的：测试“源-时空条件化”是否能改善 active-missing 区域的波前相位、峰值位置和局部传播结构。
+- 数据：`/data/Bohai_Sea/process_data_sparsemask_2x`
+- 配置：`Ocean-Agent-SDK_core/configs/bohai_xyz_2x/bohai_vz_sparsemask_2x_resshift_source_conditioned_e20_gpu0.yaml`
+- 计划输出目录：`/data1/user/lz/wave_movie/testouts/Resshift_SourceConditioned_E20_Vz`
+- 训练 tmux：`bohai_e20_source`
+- postrun tmux：`bohai_e20_source_postrun`
+- postrun 脚本：`Ocean-Agent-SDK_core/scripts/run_bohai_e20_source_conditioned_postrun.sh`
+- postrun 输出评估目录：`/data1/user/lz/wave_movie/testouts/Resshift_SourceConditioned_E20_eval`
+
+相对 ResShift200ep baseline 的变化：
+
+```text
+原输入: 5 frames x [Vz_sparse, Vz_interp, mask_observed] = 15 channels
+新输入: 原 15 channels + [x_norm, y_norm, z_norm, t_norm, source_dx_norm, source_dy_norm, source_r_norm] = 22 channels
+```
+
+关键约束：
+
+```text
+center Vz_sparse channel = 6
+center Vz_interp channel = 7
+center mask_observed channel = 8
+```
+
+所以旧的稀疏观测硬约束和 diffusion degraded baseline 通道索引不变：
+
+```text
+sparse_known_value_channels = [6]
+resshift_diffusion_y_channels = [7]
+sparse_known_mask_channel = 8
+```
+
+本实验先不叠加新的 complex-HF loss，避免把“补条件”的收益和“改 loss”的收益混在一起。
+`fft_complex_hf_l1` 已加入代码，可作为 E21 在 E20 基础上的小权重结构相位约束测试。
+
+成功标准不只看 full-frame RMSE，应重点看：
+
+```text
+active-missing RMSE
+hard early frames
+peak location error
+peak ratio
+inactive artifact energy
+every-10-frame 可视化中的波前结构是否更连续
+```
+
+训练命令：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 /home/lz/miniconda3/envs/pytorch/bin/python \
+  Ocean-Agent-SDK_core/scripts/ocean-SR-training-masked/main.py \
+  --config Ocean-Agent-SDK_core/configs/bohai_xyz_2x/bohai_vz_sparsemask_2x_resshift_source_conditioned_e20_gpu0.yaml
+```

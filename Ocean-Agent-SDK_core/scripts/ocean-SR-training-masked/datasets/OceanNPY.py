@@ -71,6 +71,7 @@ OceanNPY Dataset - 适配 ocean-preprocess 预处理输出的数据集类（带�
 
 import os
 import glob
+import math
 import re
 import numpy as np
 import torch
@@ -80,6 +81,15 @@ from utils.normalizer import UnitGaussianNormalizer, GaussianNormalizer
 # 经纬度文件名匹配模式（与 base.py 一致）
 LON_PATTERNS = ['lon', 'longitude', 'lon_rho', 'lon_u', 'lon_v']
 LAT_PATTERNS = ['lat', 'latitude', 'lat_rho', 'lat_u', 'lat_v']
+DEFAULT_CONDITION_CHANNELS = [
+    "x_norm",
+    "y_norm",
+    "z_norm",
+    "t_norm",
+    "source_dx_norm",
+    "source_dy_norm",
+    "source_r_norm",
+]
 
 
 class OceanNPYDataset:
@@ -226,6 +236,46 @@ class OceanNPYDataset:
 
         # 加载经纬度元数据（直接从 static_variables/hr/ 和 lr/ 加载）
         lon_hr, lat_hr, lon_lr, lat_lr = self._load_static_coords(dataset_root)
+        z_hr, z_lr = self._load_static_field_pair(dataset_root, field_names=("z",))
+
+        self.condition_channel_names = []
+        condition_contexts = {"train": None, "valid": None, "test": None}
+        if data_args.get("append_condition_channels", False):
+            if normalize:
+                raise ValueError(
+                    "append_condition_channels currently requires normalize=false so "
+                    "auxiliary coordinate/time/source channels are not folded into "
+                    "the LR normalizer."
+                )
+            self.condition_channel_names = list(
+                data_args.get("condition_channels") or DEFAULT_CONDITION_CHANNELS
+            )
+            condition_base = self._build_condition_base_context(
+                data_args=data_args,
+                dataset_root=dataset_root,
+                lr_shape=tuple(train_lr.shape[1:3]),
+                lon_lr=lon_lr,
+                lat_lr=lat_lr,
+                z_lr=z_lr,
+            )
+            all_condition_filenames = train_filenames + valid_filenames + test_filenames
+            frame_min, frame_max = self._frame_index_bounds(all_condition_filenames)
+            condition_contexts = {
+                "train": self._build_split_condition_context(
+                    condition_base, train_filenames, frame_min, frame_max
+                ),
+                "valid": self._build_split_condition_context(
+                    condition_base, valid_filenames, frame_min, frame_max
+                ),
+                "test": self._build_split_condition_context(
+                    condition_base, test_filenames, frame_min, frame_max
+                ),
+            }
+            print(
+                "[OceanNPY] Condition channels appended at __getitem__: "
+                f"{self.condition_channel_names} "
+                f"(+{len(self.condition_channel_names)} LR channels)"
+            )
 
         self.lon_hr = lon_hr          # np.ndarray 1D/2D or None
         self.lat_hr = lat_hr          # np.ndarray 1D/2D or None
@@ -256,19 +306,22 @@ class OceanNPYDataset:
             patch_size=patch_size, scale=scale, mask_hr=mask_hr_spatial,
             lon_hr=lon_hr, lat_hr=lat_hr, lon_lr=lon_lr, lat_lr=lat_lr,
             filenames=train_filenames, dyn_vars=hr_dyn_vars,
-            temporal_supervision_indices=train_temporal_indices)
+            temporal_supervision_indices=train_temporal_indices,
+            condition_context=condition_contexts["train"])
         self.valid_dataset = OceanNPYDatasetBase(
             valid_lr, valid_hr, mode='valid',
             patch_size=patch_size, scale=scale, mask_hr=mask_hr_spatial,
             lon_hr=lon_hr, lat_hr=lat_hr, lon_lr=lon_lr, lat_lr=lat_lr,
             filenames=valid_filenames, dyn_vars=hr_dyn_vars,
-            temporal_supervision_indices=valid_temporal_indices)
+            temporal_supervision_indices=valid_temporal_indices,
+            condition_context=condition_contexts["valid"])
         self.test_dataset = OceanNPYDatasetBase(
             test_lr, test_hr, mode='test',
             patch_size=patch_size, scale=scale, mask_hr=mask_hr_spatial,
             lon_hr=lon_hr, lat_hr=lat_hr, lon_lr=lon_lr, lat_lr=lat_lr,
             filenames=test_filenames, dyn_vars=hr_dyn_vars,
-            temporal_supervision_indices=test_temporal_indices)
+            temporal_supervision_indices=test_temporal_indices,
+            condition_context=condition_contexts["test"])
 
     def _load_var_stack(self, dataset_root, split, resolution, dyn_vars):
         arrays = []
@@ -337,6 +390,236 @@ class OceanNPYDataset:
                 "expected a trailing numeric frame id such as S1_TTTZ_000001."
             )
         return match.group('case'), int(match.group('frame'))
+
+    @staticmethod
+    def _source_name_from_case(case_name):
+        if case_name.startswith("S1_") or case_name.startswith("S1."):
+            return case_name[3:]
+        return case_name
+
+    @staticmethod
+    def _frame_index_bounds(filenames):
+        frames = [
+            OceanNPYDataset._split_temporal_filename(filename)[1]
+            for filename in filenames
+        ]
+        if not frames:
+            return 0, 0
+        return min(frames), max(frames)
+
+    @staticmethod
+    def _load_source_locations(info_path):
+        if not info_path or not os.path.exists(info_path):
+            return {}
+
+        locations = {}
+        in_location_section = False
+        with open(info_path, "r", encoding="utf-8", errors="ignore") as file_obj:
+            for raw_line in file_obj:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if "震源位置信息" in line:
+                    in_location_section = True
+                    continue
+                if not in_location_section:
+                    continue
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                try:
+                    locations[parts[0]] = (float(parts[1]), float(parts[2]))
+                except ValueError:
+                    continue
+        return locations
+
+    @staticmethod
+    def _project_lonlat_to_avs_xy_m(longitude, latitude, utm_zone=60):
+        semi_major_axis = 6378137.0
+        flattening = 1.0 / 298.257223563
+        scale_factor = 0.9996
+        eccentricity = math.sqrt(flattening * (2.0 - flattening))
+        eccentricity_sq = eccentricity * eccentricity
+        second_eccentricity_sq = eccentricity_sq / (1.0 - eccentricity_sq)
+
+        lat_rad = math.radians(latitude)
+        lon_rad = math.radians(longitude)
+        central_lon_rad = math.radians((utm_zone - 1) * 6 - 180 + 3)
+
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        tan_lat = math.tan(lat_rad)
+        n_value = semi_major_axis / math.sqrt(1.0 - eccentricity_sq * sin_lat * sin_lat)
+        t_value = tan_lat * tan_lat
+        c_value = second_eccentricity_sq * cos_lat * cos_lat
+        a_value = cos_lat * (lon_rad - central_lon_rad)
+
+        meridional_arc = semi_major_axis * (
+            (1.0 - eccentricity_sq / 4.0 - 3.0 * eccentricity_sq**2 / 64.0 - 5.0 * eccentricity_sq**3 / 256.0)
+            * lat_rad
+            - (3.0 * eccentricity_sq / 8.0 + 3.0 * eccentricity_sq**2 / 32.0 + 45.0 * eccentricity_sq**3 / 1024.0)
+            * math.sin(2.0 * lat_rad)
+            + (15.0 * eccentricity_sq**2 / 256.0 + 45.0 * eccentricity_sq**3 / 1024.0)
+            * math.sin(4.0 * lat_rad)
+            - (35.0 * eccentricity_sq**3 / 3072.0) * math.sin(6.0 * lat_rad)
+        )
+
+        easting = (
+            scale_factor
+            * n_value
+            * (
+                a_value
+                + (1.0 - t_value + c_value) * a_value**3 / 6.0
+                + (
+                    5.0
+                    - 18.0 * t_value
+                    + t_value * t_value
+                    + 72.0 * c_value
+                    - 58.0 * second_eccentricity_sq
+                )
+                * a_value**5
+                / 120.0
+            )
+            + 500000.0
+        )
+        northing = scale_factor * (
+            meridional_arc
+            + n_value
+            * tan_lat
+            * (
+                a_value * a_value / 2.0
+                + (5.0 - t_value + 9.0 * c_value + 4.0 * c_value * c_value)
+                * a_value**4
+                / 24.0
+                + (
+                    61.0
+                    - 58.0 * t_value
+                    + t_value * t_value
+                    + 600.0 * c_value
+                    - 330.0 * second_eccentricity_sq
+                )
+                * a_value**6
+                / 720.0
+            )
+        )
+        if latitude < 0:
+            northing += 10000000.0
+        avs_y = northing - 10000000.0 if latitude < 0 else northing
+        return float(easting), float(avs_y)
+
+    @staticmethod
+    def _coerce_static_grid(array, shape, axis):
+        height, width = shape
+        if array is None:
+            if axis == "x":
+                return np.tile(np.arange(width, dtype=np.float32), (height, 1))
+            if axis == "y":
+                return np.tile(np.arange(height, dtype=np.float32)[:, None], (1, width))
+            return np.zeros(shape, dtype=np.float32)
+
+        grid = np.asarray(array, dtype=np.float32)
+        if grid.ndim == 1:
+            if axis == "x" and grid.shape[0] == width:
+                grid = np.tile(grid[None, :], (height, 1))
+            elif axis == "y" and grid.shape[0] == height:
+                grid = np.tile(grid[:, None], (1, width))
+            else:
+                raise ValueError(
+                    f"Cannot broadcast static {axis}-grid shape {grid.shape} to {shape}"
+                )
+        if tuple(grid.shape) != tuple(shape):
+            raise ValueError(f"Static {axis}-grid shape mismatch: {grid.shape} != {shape}")
+        return grid.astype(np.float32, copy=False)
+
+    @staticmethod
+    def _normalize_minus_one_one(array):
+        arr = np.asarray(array, dtype=np.float32)
+        finite = np.isfinite(arr)
+        if not finite.any():
+            return np.zeros_like(arr, dtype=np.float32)
+        min_value = float(np.nanmin(arr[finite]))
+        max_value = float(np.nanmax(arr[finite]))
+        if max_value - min_value <= 1e-12:
+            return np.zeros_like(arr, dtype=np.float32)
+        norm = 2.0 * (arr - min_value) / (max_value - min_value) - 1.0
+        return np.nan_to_num(norm, nan=0.0).astype(np.float32, copy=False)
+
+    @staticmethod
+    def _build_condition_base_context(
+        *,
+        data_args,
+        dataset_root,
+        lr_shape,
+        lon_lr,
+        lat_lr,
+        z_lr,
+    ):
+        x_grid = OceanNPYDataset._coerce_static_grid(lon_lr, lr_shape, "x")
+        y_grid = OceanNPYDataset._coerce_static_grid(lat_lr, lr_shape, "y")
+        z_grid = OceanNPYDataset._coerce_static_grid(z_lr, lr_shape, "z")
+        x_range = float(np.nanmax(x_grid) - np.nanmin(x_grid))
+        y_range = float(np.nanmax(y_grid) - np.nanmin(y_grid))
+        domain_diag = math.sqrt(x_range * x_range + y_range * y_range)
+        if domain_diag <= 1e-12:
+            domain_diag = 1.0
+
+        source_info_path = data_args.get(
+            "source_info_path",
+            "/data/Bohai_Sea/To_ZGT_wave_movie/数据信息.txt",
+        )
+        source_mode = str(data_args.get("source_coordinate_mode", "lonlat")).lower()
+        source_utm_zone = int(data_args.get("source_utm_zone", 60))
+        raw_locations = OceanNPYDataset._load_source_locations(source_info_path)
+        source_locations = {}
+        for name, (first, second) in raw_locations.items():
+            if source_mode == "lonlat":
+                source_locations[name] = OceanNPYDataset._project_lonlat_to_avs_xy_m(
+                    longitude=first,
+                    latitude=second,
+                    utm_zone=source_utm_zone,
+                )
+            elif source_mode in {"avs_m", "xy_m"}:
+                source_locations[name] = (float(first), float(second))
+            else:
+                raise ValueError(
+                    "source_coordinate_mode must be 'lonlat' or 'avs_m', "
+                    f"got {source_mode!r}"
+                )
+
+        return {
+            "channel_names": list(
+                data_args.get("condition_channels") or DEFAULT_CONDITION_CHANNELS
+            ),
+            "x_raw": torch.as_tensor(x_grid, dtype=torch.float32),
+            "y_raw": torch.as_tensor(y_grid, dtype=torch.float32),
+            "x_norm": torch.as_tensor(
+                OceanNPYDataset._normalize_minus_one_one(x_grid), dtype=torch.float32
+            ),
+            "y_norm": torch.as_tensor(
+                OceanNPYDataset._normalize_minus_one_one(y_grid), dtype=torch.float32
+            ),
+            "z_norm": torch.as_tensor(
+                OceanNPYDataset._normalize_minus_one_one(z_grid), dtype=torch.float32
+            ),
+            "domain_diag": float(domain_diag),
+            "source_locations": source_locations,
+        }
+
+    @staticmethod
+    def _build_split_condition_context(base_context, filenames, frame_min, frame_max):
+        denom = float(max(frame_max - frame_min, 1))
+        frame_norms = []
+        source_xy = []
+        for filename in filenames:
+            case_name, frame_index = OceanNPYDataset._split_temporal_filename(filename)
+            frame_norms.append((float(frame_index) - float(frame_min)) / denom)
+            source_name = OceanNPYDataset._source_name_from_case(case_name)
+            source_xy.append(base_context["source_locations"].get(source_name))
+
+        context = dict(base_context)
+        context["frame_norms"] = torch.as_tensor(frame_norms, dtype=torch.float32)
+        context["source_xy"] = source_xy
+        return context
 
     @staticmethod
     def _build_temporal_split(
@@ -470,6 +753,38 @@ class OceanNPYDataset:
         return lon_hr, lat_hr, lon_lr, lat_lr
 
     @staticmethod
+    def _find_static_field(npy_files, field_names):
+        normalized_names = {name.lower() for name in field_names}
+        for fpath in npy_files:
+            basename = os.path.splitext(os.path.basename(fpath))[0]
+            parts = basename.split('_', 1)
+            varname = parts[1] if len(parts) > 1 else parts[0]
+            varname_lower = varname.lower()
+            if varname_lower in normalized_names:
+                return np.load(fpath)
+        return None
+
+    @staticmethod
+    def _load_static_field_pair(dataset_root, field_names):
+        static_dir = os.path.join(dataset_root, 'static_variables')
+        if not os.path.isdir(static_dir):
+            return None, None
+
+        values = []
+        for resolution in ("hr", "lr"):
+            resolution_dir = os.path.join(static_dir, resolution)
+            if os.path.isdir(resolution_dir):
+                values.append(
+                    OceanNPYDataset._find_static_field(
+                        sorted(glob.glob(os.path.join(resolution_dir, '*.npy'))),
+                        field_names,
+                    )
+                )
+            else:
+                values.append(None)
+        return values[0], values[1]
+
+    @staticmethod
     def _find_static_mask(npy_files):
         for fpath in npy_files:
             basename = os.path.splitext(os.path.basename(fpath))[0].lower()
@@ -544,7 +859,8 @@ class OceanNPYDatasetBase(Dataset):
 
     def __init__(self, x, y, mode='train', patch_size=None, scale=1, mask_hr=None,
                  lon_hr=None, lat_hr=None, lon_lr=None, lat_lr=None,
-                 filenames=None, dyn_vars=None, temporal_supervision_indices=None, **kwargs):
+                 filenames=None, dyn_vars=None, temporal_supervision_indices=None,
+                 condition_context=None, **kwargs):
         self.mode = mode
         self.x = x
         self.y = y
@@ -558,6 +874,7 @@ class OceanNPYDatasetBase(Dataset):
         self.filenames = filenames  # list[str] or None
         self.dyn_vars = dyn_vars    # list[str] or None
         self.temporal_supervision_indices = temporal_supervision_indices
+        self.condition_context = condition_context
         self.mode = mode
         # 非训练模式 + 有 patch_size：预计算非重叠网格位置
         if patch_size is not None and mode != 'train':
@@ -584,6 +901,45 @@ class OceanNPYDatasetBase(Dataset):
         if self._grid_positions is not None:
             return len(self.x) * len(self._grid_positions)
         return len(self.x)
+
+    def _append_condition_channels(self, x, sample_idx, top=0, left=0):
+        if self.condition_context is None:
+            return x
+
+        height, width = x.shape[0], x.shape[1]
+        channels = []
+        context = self.condition_context
+        x_raw = context["x_raw"][top:top + height, left:left + width]
+        y_raw = context["y_raw"][top:top + height, left:left + width]
+
+        for name in context["channel_names"]:
+            if name in {"x_norm", "y_norm", "z_norm"}:
+                channel = context[name][top:top + height, left:left + width]
+            elif name == "t_norm":
+                value = context["frame_norms"][int(sample_idx)]
+                channel = torch.full((height, width), value, dtype=torch.float32)
+            elif name in {"source_dx_norm", "source_dy_norm", "source_r_norm"}:
+                source_xy = context["source_xy"][int(sample_idx)]
+                if source_xy is None:
+                    channel = torch.zeros((height, width), dtype=torch.float32)
+                else:
+                    source_x, source_y = source_xy
+                    dx = (x_raw - float(source_x)) / context["domain_diag"]
+                    dy = (y_raw - float(source_y)) / context["domain_diag"]
+                    if name == "source_dx_norm":
+                        channel = dx
+                    elif name == "source_dy_norm":
+                        channel = dy
+                    else:
+                        channel = torch.sqrt(dx * dx + dy * dy)
+            else:
+                raise ValueError(f"Unsupported condition channel: {name}")
+            channels.append(channel.to(dtype=x.dtype).unsqueeze(-1))
+
+        if not channels:
+            return x
+        condition = torch.cat(channels, dim=-1).to(device=x.device)
+        return torch.cat([x, condition], dim=-1)
 
     def __getitem__(self, idx):
         if self._grid_positions is not None:
@@ -612,6 +968,15 @@ class OceanNPYDatasetBase(Dataset):
             x = x[lr_top:lr_top+lr_ps, lr_left:lr_left+lr_ps, :]
             if x_seq is not None:
                 x_seq = x_seq[:, lr_top:lr_top+lr_ps, lr_left:lr_left+lr_ps, :]
+            x = self._append_condition_channels(x, sample_idx, lr_top, lr_left)
+            if x_seq is not None:
+                x_seq = torch.stack(
+                    [
+                        self._append_condition_channels(x_seq_item, int(seq_index), lr_top, lr_left)
+                        for x_seq_item, seq_index in zip(x_seq, seq_indices)
+                    ],
+                    dim=0,
+                )
 
             if self.mask_hr is not None:
                 mask_hr_patch = self.mask_hr[0, top:top+ps, left:left+ps, :]
@@ -657,6 +1022,15 @@ class OceanNPYDatasetBase(Dataset):
             x = x[lr_top:lr_top+lr_ps, lr_left:lr_left+lr_ps, :]
             if x_seq is not None:
                 x_seq = x_seq[:, lr_top:lr_top+lr_ps, lr_left:lr_left+lr_ps, :]
+            x = self._append_condition_channels(x, idx, lr_top, lr_left)
+            if x_seq is not None:
+                x_seq = torch.stack(
+                    [
+                        self._append_condition_channels(x_seq_item, int(seq_index), lr_top, lr_left)
+                        for x_seq_item, seq_index in zip(x_seq, seq_indices)
+                    ],
+                    dim=0,
+                )
 
             # 裁剪对应的 mask patch
             if self.mask_hr is not None:
@@ -665,7 +1039,15 @@ class OceanNPYDatasetBase(Dataset):
                     return x, y, mask_hr_patch, x_seq, y_seq
                 return x, y, mask_hr_patch
 
+        x = self._append_condition_channels(x, idx, 0, 0)
         if x_seq is not None:
+            x_seq = torch.stack(
+                [
+                    self._append_condition_channels(x_seq_item, int(seq_index), 0, 0)
+                    for x_seq_item, seq_index in zip(x_seq, seq_indices)
+                ],
+                dim=0,
+            )
             return x, y, x_seq, y_seq
         return x, y
 
